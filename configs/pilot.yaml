@@ -1,0 +1,21 @@
+# Pilot (1-week) experiment config.
+model:
+  name: llava-hf/llava-1.5-7b-hf
+  dtype: float16          # keep unquantized: H1 latency is distorted by quantization kernels
+  attn_implementation: sdpa
+
+# Compression methods (see src/vlmeval/methods). "none" and "blind" are always run.
+methods: [random, avgpool, cls_attn]
+# Fraction of the 576 visual tokens REMOVED.
+ratios: [0.5, 0.75, 0.9]
+
+benchmarks:
+  pope:    {n_samples: 500, split: test}
+  textvqa: {n_samples: 500, split: validation}
+  mme:     {n_samples: 500, split: test}
+  # gqa: adapter is a TODO (images live in a separate HF config).
+
+seed: 0
+max_new_tokens: 16
+warmup_samples: 5          # latency is measured per sample at batch size 1
+output_dir: outputs/pilot
