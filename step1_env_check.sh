@@ -38,4 +38,4 @@ import json, sys
 json.dump({"flash_env_count": int(sys.argv[1])}, open("env/env_flags.json", "w"), indent=2)
 PY
 echo "[OK] Environment check complete. FlashAttention available in $FLASH_COUNT env(s)."
-echo "Next: configure MME_ROOT in .env, then bash step2_smoke_test.sh"
+echo "Next: set MME_ROOT in .env, then run bash step2_smoke_test.sh"

@@ -6,13 +6,14 @@
 
 NVIDIA GPU와 정상 동작하는 NVIDIA Driver가 필요합니다. Ubuntu/Debian, RHEL 계열(dnf/yum), Arch Linux(pacman)에서 아래 명령을 실행할 수 있습니다.
 
+저장소 압축을 이미 해제했다면 저장소 폴더로 이동한 뒤 아래 한 줄만 실행하면 됩니다.
+
 ```bash
-unzip h1_bench.zip
-cd h1_bench
-cp .env.example .env
-# .env를 열어 MME_ROOT를 실제 MME 데이터셋 경로로 수정
-bash setup/setup_all.sh
+cd /path/to/h1_bench
+bash setup.sh
 ```
+
+`setup.sh`가 `.env`를 자동 생성하고 시스템 패키지, Miniforge, 비교 알고리즘 저장소, Conda 환경 및 Python 의존성을 순서대로 설치합니다. MME 데이터셋 경로는 설치 후 `.env`의 `MME_ROOT`에 지정하면 됩니다.
 
 설치 후 검증 및 실행 순서는 [RUN_GUIDE.md](RUN_GUIDE.md)를 참고하세요.
 

@@ -11,23 +11,17 @@
 
 ## 1. 최초 설치 (아무 개발 환경도 없는 Linux)
 
+저장소 압축을 이미 해제했다면 다시 압축을 풀 필요가 없습니다. Vast.ai 인스턴스에서 저장소 폴더로 이동한 뒤 아래 한 줄을 실행합니다.
+
 ```bash
-unzip h1_bench.zip
-cd h1_bench
-cp .env.example .env
+cd /path/to/h1_bench
+bash setup.sh
 ```
 
-`.env` 파일을 열어 MME 경로를 입력합니다.
+`setup.sh`가 `.env`를 자동 생성한 뒤 전체 설치를 진행합니다. MME 데이터셋 경로는 설치 후 `.env`의 `MME_ROOT`에 입력합니다. 예를 들어 데이터셋을 저장소 안의 `data/`에 압축 해제했다면 다음처럼 지정합니다.
 
 ```bash
-MME_ROOT=/absolute/path/to/MME_Benchmark_release_version
-ANCHORPRUNE_PATH=
-```
-
-그 다음 한 번만 실행합니다.
-
-```bash
-bash setup/setup_all.sh
+MME_ROOT=/workspace/h1_bench/data/MME_Benchmark_release_version
 ```
 
 이 스크립트는 다음을 순서대로 수행합니다.

@@ -15,4 +15,7 @@ bash step1_env_check.sh
 
 echo
 echo "[DONE] Initial setup finished."
-echo "Next: configure MME_ROOT in .env, then run bash step2_smoke_test.sh"
+echo "Next steps:"
+echo "  1) Set MME_ROOT in .env to the extracted MME_Benchmark_release_version directory."
+echo "  2) Run: bash step1_env_check.sh"
+echo "  3) Run: bash step2_smoke_test.sh"
