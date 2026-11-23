@@ -1,5 +1,7 @@
 # H1 실험: 이론 효율(FLOPs)과 실측 효율(latency/메모리)의 괴리
 
+> **프로토콜(요인·판정 기준·일정·Claim–Evidence)은 [h1_protocol.md](h1_protocol.md)가 우선한다.** 이 문서는 하네스 설명이다.
+
 ## 가설
 
 > 시각 토큰 효율화 방법들을 FLOPs(또는 토큰 수)로 매긴 순위는 실측 latency/메모리 순위와 일치하지 않으며,
@@ -23,8 +25,8 @@
   - 인코더 측: `random`, `avgpool`, `cls_attn` (CLS attention top-k) — attention 구현 불변
   - LLM 내부: `fastv` (K=1 이후), `pdrop` (7/15/23층, PyramidDrop 스타일), `sparsevlm_lite` (2/6/15층, 텍스트 query 기반 점수)
   - **주의:** LLM 내부 방법은 공식 코드가 아닌 최소 재구현이다 (`sparsevlm_lite`에는 recycling/merging 없음). 공식 구현으로 재현하려면 `custom_methods`로 스케줄을 조정하거나 교체한다.
-- 축: 방법 x budget(192/144/64) x 배치(1/4/16) x attention(sdpa/eager), 출력 64 tokens (L=1/16/64는 per-step 기록에서 파생).
-- 측정: `vision_ms`, `prefill_ms`, 스텝별 `decode_ms`, `peak_mem_mb`, `kv_mb`. warmup 3회, 반복 10회, CUDA event 사용, OOM은 기록 후 건너뜀, 중단 후 재개 지원.
+- 축: 방법 x budget(192/128/64/32) x 배치(1/4/16/32) x attention(eager/sdpa/flash[/fa2]), 출력 512 tokens (L=1/32/128/512는 per-step 기록에서 파생). 전체 조합 대신 fractional design(`grids`, `configs/h1.yaml`) 사용.
+- 측정: `vision_ms`, `prefill_ms`, 스텝별 `decode_ms`, L별 `peak_mem_by_len`, `kv_mb`, 오버헤드 분해(`ovh_*`), 실행 커널(`kernel_family`), GPU 상태. prefill pass(warm-up 10, 반복 50)와 decode pass(warm-up 3, 반복 10) 분리, CUDA event 사용, OOM/unsupported는 기록 후 건너뜀, 중단 후 재개 지원.
 - 엔진: HF 모델 가중치만 사용하는 자체 추론 루프(`efficiency/engine.py`). 같은 코드 경로에서 sdpa/eager만 바꾸고, LLM 내부 pruning과 KV 길이를 직접 제어한다. pruning 없을 때 HF 결과와 일치함을 테스트로 확인했다.
 - 이론 FLOPs: 해석적 계산(`efficiency/flops.py`). dense attention, LM head는 마지막 위치만, 비전 FLOPs는 projector 포함. FLOPs는 attn 구현과 무관하지만 latency는 무관하지 않다. 이것이 H1의 핵심 관찰 대상이다. LLaVA-1.5 전체 prefill 약 8.2~8.5T (AnchorPrune 보고 8.94T). sdpa 모드의 LLM 내부 방법은 별도 scoring pass의 FLOPs도 포함한다.
 
@@ -43,7 +45,9 @@ decode처럼 FLOPs 차이가 거의 없는 구간에서는 tau가 동률에 좌�
 
 ```bash
 python scripts/profile_efficiency.py --flops-only                          # GPU 없이 FLOPs 표
-python scripts/profile_efficiency.py --config configs/h1.yaml              # GPU, 재개 가능
+python scripts/plan_h1.py --config configs/h1.yaml                         # config 수 / GPU 시간 추정
+python scripts/profile_efficiency.py --config configs/h1_pilot.yaml        # 파일럿(~0.3 h)
+python scripts/profile_efficiency.py --config configs/h1.yaml              # 본 실험, GPU, 재개 가능
 python scripts/analyze_h1.py --records outputs/h1/records.jsonl --out outputs/h1/report
 ```
 

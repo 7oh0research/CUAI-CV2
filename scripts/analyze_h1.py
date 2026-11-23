@@ -18,7 +18,7 @@ def main() -> None:
     ap.add_argument("--records", default="outputs/h1/records.jsonl")
     ap.add_argument("--out", default="outputs/h1/report")
     ap.add_argument("--synthetic", action="store_true", help="simulated latencies, pipeline check only")
-    ap.add_argument("--lengths", type=int, nargs="+", default=[1, 16, 64], help="output lengths L for e2e latency")
+    ap.add_argument("--lengths", type=int, nargs="+", default=[1, 32, 128, 512], help="output lengths L for e2e latency")
     ap.add_argument("--n-boot", type=int, default=300)
     args = ap.parse_args()
 

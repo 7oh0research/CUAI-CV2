@@ -10,7 +10,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from .analysis import expand, frequent_inversions, settings, summarize  # noqa: E402
+from .analysis import (H1_REFUTE_TAU, H1_SUPPORT_TAU, expand, frequent_inversions, perm_test_tau,  # noqa: E402
+                       settings, summarize)
 
 
 def _md(df: pd.DataFrame, floatfmt=".3g") -> str:
@@ -50,26 +51,63 @@ def _scatter(ms: pd.DataFrame, path: Path) -> None:
     plt.close(fig)
 
 
-def write_report(records: pd.DataFrame, out_dir: str | Path, lengths=(1, 16, 64), n_boot: int = 300,
-                 title: str = "H1 report") -> dict[str, pd.DataFrame]:
+def _tests(long: pd.DataFrame, ok: pd.DataFrame, lengths, n_perm: int) -> pd.DataFrame:
+    """Permutation tests: does the batch size / output length / backend change how well FLOPs predicts the order?"""
+    bss, impls = sorted(ok.batch_size.unique()), sorted(ok.attn_impl.unique())
+    Ls = [L for L in lengths if L - 1 <= int(ok.max_new.max())]
+    ref = dict(phase="e2e", L=max(Ls))
+    rows = []
+    if len(bss) > 1:
+        for impl in impls:
+            rows.append(("batch " + f"{bss[0]} vs {bss[-1]}", impl, f"e2e L={max(Ls)}",
+                         perm_test_tau(long, {**ref, "attn_impl": impl, "batch_size": bss[0]},
+                                       {**ref, "attn_impl": impl, "batch_size": bss[-1]}, n_perm)))
+    if len(Ls) > 1:
+        for impl in impls:
+            rows.append((f"output length {min(Ls)} vs {max(Ls)}", impl, f"e2e bs={bss[0]}",
+                         perm_test_tau(long, {"phase": "e2e", "L": min(Ls), "attn_impl": impl, "batch_size": bss[0]},
+                                       {"phase": "e2e", "L": max(Ls), "attn_impl": impl, "batch_size": bss[0]}, n_perm)))
+    for a, b in zip(impls, impls[1:]):
+        rows.append((f"backend {a} vs {b}", "-", f"e2e L={max(Ls)}",
+                     perm_test_tau(long, {**ref, "attn_impl": a}, {**ref, "attn_impl": b}, n_perm)))
+    return pd.DataFrame([{"factor": f, "attn_impl": i, "phase": p, "tau_a": r["tau_a"], "tau_b": r["tau_b"],
+                          "diff": r["diff"], "p_perm": r["p"]} for f, i, p, r in rows])
+
+
+def write_report(records: pd.DataFrame, out_dir: str | Path, lengths=(1, 32, 128, 512), n_boot: int = 300,
+                 title: str = "H1 report", n_perm: int = 2000) -> dict[str, pd.DataFrame]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     ok = records[records.status == "ok"]
     n_oom = int((records.status == "oom").sum())
+    n_unsup = int((records.status == "unsupported").sum())
     long = expand(records, lengths)
     st, ms, pairs = settings(long, n_boot=n_boot)
-    for name, df in {"settings": st, "methods": ms, "inversions": pairs}.items():
+    tests = _tests(long, ok, lengths, n_perm)
+    for name, df in {"settings": st, "methods": ms, "inversions": pairs, "permutation_tests": tests}.items():
         df.to_csv(out / f"{name}.csv", index=False)
 
     head = summarize(st)
     ref_bs = int(ok.batch_size.min())
     ref_budget = int(ok[ok.method != "none"].budget.min())
     ref_L = max(L for L in lengths if L - 1 <= int(ok.max_new.max()))
+    envs = ok[["device", "torch_version", "cuda_version", "transformers_version", "flash_attn_version",
+               "git_commit"]].drop_duplicates()
+    n_set = max(len(st), 1)
     sections = [f"# {title}", "",
-                f"- device: {ok.device.iloc[0]}, dtype: {ok.dtype.iloc[0]}, torch: {ok.torch_version.iloc[0]}",
-                f"- models: {', '.join(sorted(ok.model.unique()))}; methods: {', '.join(sorted(ok.method.unique()))}",
-                f"- repeats per config: {int(ok.repeat.max()) + 1}; OOM configs skipped: {n_oom}",
-                f"- settings analysed: {len(st)} (model x attn_impl x batch x budget x phase x L)", "",
+                "- environment: " + "; ".join(f"{r.device} | torch {r.torch_version} | cuda {r.cuda_version} | "
+                                              f"transformers {r.transformers_version} | flash-attn "
+                                              f"{r.flash_attn_version} | commit {r.git_commit}"
+                                              for r in envs.itertuples()),
+                f"- dtype: {ok.dtype.iloc[0]}; models: {', '.join(sorted(ok.model.unique()))}; "
+                f"methods: {', '.join(sorted(ok.method.unique()))}",
+                f"- repeats per config (max): {int(ok.repeat.max()) + 1}; OOM configs: {n_oom}; "
+                f"unsupported kernel configs: {n_unsup}",
+                f"- settings analysed: {len(st)} (model x device x attn_impl x batch x budget x phase x L)",
+                f"- **H1 verdict inputs:** {st.h1_support.mean():.0%} of settings have tau CI upper bound < "
+                f"{H1_SUPPORT_TAU} (support); {st.h1_refute.mean():.0%} have CI lower bound >= {H1_REFUTE_TAU} "
+                f"(refute); {(st.n_inverted > 0).mean():.0%} contain >=1 reliable inversion "
+                f"({int(st.n_inverted.sum())} of {int(st.n_pairs.sum())} FLOPs-separated pairs)", "",
                 "## 1. FLOPs rank vs measured rank (Kendall tau, higher = FLOPs predicts the order)", "",
                 _md(head), "",
                 "`share_with_inversion` = fraction of settings with >=1 *reliably* reversed pair "
@@ -78,15 +116,19 @@ def write_report(records: pd.DataFrame, out_dir: str | Path, lengths=(1, 16, 64)
                 "(e.g. decode) tau is dominated by near-ties and the inversion count is the safer statistic.", ""]
 
     for impl in sorted(ok.attn_impl.unique()):
-        for phase, L in (("prefill", 0), ("decode", 0), ("e2e", ref_L)):
+        for phase, L in (("prefill", 0), ("decode", 0), ("e2e", ref_L), ("memory", ref_L)):
             sub = ms[(ms.attn_impl == impl) & (ms.batch_size == ref_bs) & (ms.budget == ref_budget)
                      & (ms.phase == phase) & (ms.L == L)]
             if sub.empty:
                 continue
             t = sub[["method", "flops", "flops_speedup", "value", "measured_speedup", "realization"]].copy()
             t["flops"] = t.flops / 1e12
-            t.columns = ["method", "FLOPs (T)", "FLOPs speedup", "measured (ms)", "measured speedup",
-                         "realization = measured / FLOPs speedup"]
+            names = ["method", "FLOPs (T)", "FLOPs speedup", "measured (ms)" if phase != "memory" else "peak mem (MB)",
+                     "measured speedup", "realization = measured / FLOPs speedup"]
+            if phase == "e2e":
+                t["tokens/s"] = ref_bs * L / sub.value * 1e3
+                names.append("tokens/s")
+            t.columns = names
             sections += [f"## 2. attn={impl}, {phase}{f' (L={L})' if L else ''}, batch={ref_bs}, "
                          f"budget={ref_budget}", "", _md(t.sort_values("FLOPs (T)")), ""]
 
@@ -94,9 +136,32 @@ def write_report(records: pd.DataFrame, out_dir: str | Path, lengths=(1, 16, 64)
                  "method_b)", "", _md(frequent_inversions(pairs)), ""]
     slow = pairs[pairs.method_b == "none"]
     if len(slow):
-        sections += ["## 4. Methods with fewer FLOPs than the uncompressed baseline that are nevertheless slower/larger",
-                     "", _md(slow.groupby(["method_a", "attn_impl", "phase"]).size().rename("settings")
-                             .reset_index().sort_values("settings", ascending=False).head(15)), ""]
+        sections += ["## 4. Break-even: methods with fewer FLOPs than the uncompressed baseline that are "
+                     "nevertheless slower/larger", "",
+                     _md(slow.groupby(["method_a", "attn_impl", "phase"]).size().rename("settings")
+                         .reset_index().sort_values("settings", ascending=False).head(15)), ""]
+    sections += ["## 5. Permutation tests (does the condition change how well FLOPs predicts the order?)", "",
+                 _md(tests), ""]
+    k = ok.dropna(subset=["kernel_family"])
+    if len(k):
+        kt = (k.groupby(["attn_impl", "method"]).agg(kernel_family=("kernel_family", lambda s: ",".join(sorted(set(s)))),
+                                                    matches_request=("kernel_ok", "all")).reset_index())
+        sections += ["## 6. Kernel verification (what actually ran)", "",
+                     _md(kt[~kt.matches_request]) if (~kt.matches_request).any() else "All configs ran the requested "
+                     "kernel family.", "", _md(kt.groupby(["attn_impl", "kernel_family"]).size().rename("configs")
+                                              .reset_index()), ""]
+    o = ok.dropna(subset=["ovh_select_ms"])
+    o = o[(o.batch_size == ref_bs) & (o.budget == ref_budget) & (o.method != "none")]
+    if len(o):
+        sections += [f"## 7. Pruning overhead inside prefill (ms; batch={ref_bs}, budget={ref_budget})", "",
+                     _md(o.groupby(["attn_impl", "method"])[["ovh_score_ms", "ovh_select_ms", "ovh_gather_ms"]]
+                         .mean().reset_index()), ""]
+    clk = ok.dropna(subset=["sm_clock_mhz"])
+    if len(clk):
+        sections += ["## 8. GPU state after each config (throttling audit)", "",
+                     _md(clk.groupby("attn_impl")[["sm_clock_mhz", "temp_c", "power_w"]]
+                         .agg(["min", "max"]).pipe(lambda d: d.set_axis(["_".join(c) for c in d.columns], axis=1))
+                         .reset_index()), ""]
 
     _heatmap(st, out / "tau_heatmap.png")
     e2e = ms[(ms.phase == "e2e") & (ms.L == ref_L) & (ms.batch_size == ref_bs) & (ms.budget == ref_budget)]
@@ -104,4 +169,4 @@ def write_report(records: pd.DataFrame, out_dir: str | Path, lengths=(1, 16, 64)
         _scatter(e2e, out / "flops_vs_latency.png")
         sections += [f"![tau](tau_heatmap.png)", f"![flops vs latency](flops_vs_latency.png)", ""]
     (out / "report.md").write_text("\n".join(sections), encoding="utf-8")
-    return {"settings": st, "methods": ms, "inversions": pairs, "summary": head}
+    return {"settings": st, "methods": ms, "inversions": pairs, "summary": head, "tests": tests}

@@ -12,14 +12,13 @@ from pathlib import Path
 
 import pandas as pd
 
-KEY = ["model", "attn_impl", "method", "budget", "batch_size", "repeat"]
+KEY = ["model", "attn_impl", "method", "budget", "batch_size", "max_new", "repeat"]
 
 COLUMNS = KEY + [
-    "status",              # ok | oom
+    "status",              # ok | oom | unsupported (forced kernel not available)
     "n_visual_in",         # visual tokens entering the LLM (after encoder-side pruning)
     "n_visual_final",      # visual tokens in the deepest LLM layer (after in-LLM pruning)
     "n_text",
-    "max_new",
     "vision_ms",           # vision tower + projector + encoder-side pruning
     "prefill_ms",          # LLM prefill incl. in-LLM scoring/pruning, up to the first generated token
     "decode_ms",           # list: latency of each decode step
@@ -30,9 +29,22 @@ COLUMNS = KEY + [
     "prefill_flops",       # LLM prefill (+ scoring pass when no attention map is free)
     "decode_flops_step0",  # first decode step; step j costs step0 + j * decode_flops_slope
     "decode_flops_slope",
+    "peak_mem_by_len",     # dict {L: peak MB}: separate runs with max_new=L (first decode-pass repeat only)
+    "ovh_score_ms",        # extra attention-scoring pass in prefill (0 with eager: the map is a by-product)
+    "ovh_select_ms",       # head-mean + top-k + sort
+    "ovh_gather_ms",       # index build + gather of hidden states / positions
+    "kernel_family",       # attention kernel actually executed (kernels.py), first repeat only
+    "kernel_ok",           # executed family matches the requested attn_impl
+    "sm_clock_mhz",        # GPU state sampled right after the config (throttling audit)
+    "temp_c",
+    "power_w",
     "device",
     "dtype",
     "torch_version",
+    "cuda_version",
+    "transformers_version",
+    "flash_attn_version",
+    "git_commit",
 ]
 
 

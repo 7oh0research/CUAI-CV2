@@ -14,10 +14,13 @@ No padding is used (profiling batches replicate one prompt), so SDPA runs with `
 
 from __future__ import annotations
 
+import time
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 
 import torch
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .flops import LLMDims
 from .methods import ENCODERS, MethodSpec
@@ -44,10 +47,17 @@ class State:
         return sum(t.numel() * t.element_size() for t in self.k + self.v)
 
 
+ATTN_IMPLS = ("eager", "sdpa", "flash", "fa2")
+# eager: materialised attention map (probabilities free). sdpa: torch picks the fused kernel. flash: torch SDPA
+# *forced* to its FlashAttention kernel (raises if ineligible, so a silent fallback is impossible). fa2: the
+# flash-attn package. Fused backends need a separate scoring pass for attention-based pruning.
+
+
 class Engine:
     def __init__(self, model, attn_impl: str = "sdpa"):
-        assert attn_impl in ("sdpa", "eager")
+        assert attn_impl in ATTN_IMPLS, attn_impl
         self.model, self.attn_impl = model, attn_impl
+        self.timers: dict[str, float] | None = None   # set to {} for an overhead-decomposition pass
         core = getattr(model, "model", None)
         inner = core if core is not None and hasattr(core, "language_model") else model
         lm = inner.language_model
@@ -103,6 +113,33 @@ class Engine:
             self._masks[key] = torch.ones(tq, tk, dtype=torch.bool, device=device).triu(1 + tk - tq)
         return self._masks[key]
 
+    @contextmanager
+    def _t(self, name: str):
+        """Accumulate synchronised wall time of a region (only in decomposition passes: it serialises the GPU)."""
+        if self.timers is None:
+            yield
+            return
+        cuda = torch.cuda.is_available()
+        if cuda:
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        yield
+        if cuda:
+            torch.cuda.synchronize()
+        self.timers[name] = self.timers.get(name, 0.0) + (time.perf_counter() - t0) * 1e3
+
+    def _kernel_ctx(self):
+        return sdpa_kernel(SDPBackend.FLASH_ATTENTION) if self.attn_impl == "flash" else nullcontext()
+
+    def _fused(self, q, k, v, causal):
+        tq = q.shape[2]
+        if self.attn_impl == "fa2":
+            from flash_attn import flash_attn_func
+
+            o = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), causal=causal and tq > 1)
+            return o.transpose(1, 2)
+        return F.scaled_dot_product_attention(q, k, v, is_causal=causal and tq > 1)
+
     def _eager(self, q, k, v, causal, keep_rows):
         s = (q @ k.transpose(-1, -2)) * (q.shape[-1] ** -0.5)
         if causal and q.shape[2] > 1:
@@ -152,19 +189,24 @@ class Engine:
             if self.attn_impl == "eager":
                 o, w = self._eager(q, kk, vv, True, rows_for_score if want else 0)
             else:
-                o = F.scaled_dot_product_attention(q, kk, vv, is_causal=True)
-                w = self._row_probs(q[:, :, -rows_for_score:], kk) if want else None
+                with self._kernel_ctx():
+                    o = self._fused(q, kk, vv, True)
+                if want:
+                    with self._t("score"):   # extra pass: fused kernels do not return probabilities
+                        w = self._row_probs(q[:, :, -rows_for_score:], kk)
             x = x + a.o_proj(o.transpose(1, 2).reshape(b, t, -1))
             x = x + layer.mlp(layer.post_attention_layernorm(x))
 
             if want:
-                score = w.float().mean(dim=(1, 2))[:, P:P + vis]
                 keep = stage_at[l]
-                idx = score.topk(keep, dim=1).indices.sort(dim=1).values
-                sel = torch.cat([torch.arange(P, device=dev).expand(b, -1), P + idx,
-                                 torch.arange(P + vis, t, device=dev).expand(b, -1)], dim=1)
-                x = x.gather(1, sel[..., None].expand(-1, -1, x.shape[-1]))
-                pos = pos.gather(1, sel)
+                with self._t("select"):
+                    score = w.float().mean(dim=(1, 2))[:, P:P + vis]
+                    idx = score.topk(keep, dim=1).indices.sort(dim=1).values
+                with self._t("gather"):
+                    sel = torch.cat([torch.arange(P, device=dev).expand(b, -1), P + idx,
+                                     torch.arange(P + vis, t, device=dev).expand(b, -1)], dim=1)
+                    x = x.gather(1, sel[..., None].expand(-1, -1, x.shape[-1]))
+                    pos = pos.gather(1, sel)
                 vis = keep
 
         st.next_pos = embeds.shape[1]
@@ -191,7 +233,8 @@ class Engine:
             if self.attn_impl == "eager":
                 o, _ = self._eager(q, kk, vv, False, 0)
             else:
-                o = F.scaled_dot_product_attention(q, kk, vv)
+                with self._kernel_ctx():
+                    o = self._fused(q, kk, vv, False)
             x = x + a.o_proj(o.transpose(1, 2).reshape(b, 1, -1))
             x = x + layer.mlp(layer.post_attention_layernorm(x))
         st.next_pos += 1
