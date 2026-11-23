@@ -131,3 +131,69 @@ def test_analysis_detects_inversions_on_synthetic():
     inv = pairs[pairs.method_a == "sparsevlm_lite"]
     assert {"fastv", "pdrop"} <= set(inv.method_b)
     assert (pairs.flops_ratio != 1).all()
+
+
+def test_forced_flash_matches_sdpa_or_is_unsupported(model):
+    eng_s, eng_f = Engine(model, "sdpa"), Engine(model, "flash")
+    embeds, nv = _inputs(eng_s, BUILTIN["none"], N_VIS)
+    ref, _ = eng_s.generate(embeds, P, nv, S, [], "last", max_new=3)
+    try:
+        out, _ = eng_f.generate(embeds, P, nv, S, [], "last", max_new=3)
+    except RuntimeError:   # no flash kernel for this device/dtype: must raise, never silently fall back
+        return
+    assert torch.equal(out, ref)
+
+
+def test_region_timers_only_in_pruning_stages(model):
+    eng = Engine(model, "sdpa")
+    embeds, nv = _inputs(eng, BUILTIN["none"], N_VIS)
+    eng.timers = {}
+    eng.prefill(embeds, P, nv, S, [], "last", 1)
+    assert eng.timers == {}
+    eng.prefill(embeds, P, nv, S, [(1, 8)], "last", 1)
+    assert set(eng.timers) == {"score", "select", "gather"}
+
+
+def test_kernel_classification():
+    from vlmeval.efficiency.kernels import classify, kernel_ok
+
+    assert classify(["aten::linear", "aten::_scaled_dot_product_flash_attention"]) == "sdpa_flash"
+    assert classify(["void pytorch_flash::flash_fwd_kernel"]) == "sdpa_flash"
+    assert classify(["void flash_fwd_kernel<Flash_fwd_kernel_traits>"]) == "fa2"
+    assert classify(["fmha_cutlassF_f16_aligned_64x64_rf_sm80"]) == "sdpa_efficient"
+    assert classify(["aten::softmax", "aten::bmm"]) == "eager"
+    assert kernel_ok("sdpa", "sdpa_efficient") and not kernel_ok("flash", "sdpa_efficient")   # silent fallback caught
+    assert not kernel_ok("eager", "sdpa_flash")
+
+
+def test_expand_grids_fractional_design():
+    from vlmeval.efficiency.profiler import expand_grids
+
+    cfg = {"methods": ["fastv", "random"], "budgets": [64, 32], "batch_sizes": [1, 4], "attn_impls": ["eager", "sdpa"],
+           "grids": [{"budgets": [64]}, {"budgets": [32], "attn_impls": ["sdpa"], "batch_sizes": [1]}],
+           "shuffle_seed": 1}
+    combos = expand_grids(cfg, 576)
+    assert len(combos) == len(set(combos))
+    assert sum(c[2] == "none" for c in combos) == 4          # once per (backend, batch)
+    assert {c[3] for c in combos if c[0] == "eager"} == {576, 64}
+    assert {(c[1], c[3]) for c in combos if c[0] == "sdpa" and c[3] == 32} == {(1, 32)}
+    assert combos == expand_grids(cfg, 576)                  # deterministic shuffle
+
+
+def test_permutation_test_separates_conditions():
+    import numpy as np
+    import pandas as pd
+
+    from vlmeval.efficiency.analysis import SETTING, perm_test_tau
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for bs, noise in ((1, 0.01), (16, 5.0)):   # bs=16: measured order uncorrelated with FLOPs
+        for rep in range(20):
+            for i, m in enumerate("abcde"):
+                rows.append(dict(model="m", device="d", attn_impl="sdpa", batch_size=bs, budget=64, phase="e2e",
+                                 L=32, method=m, rep=f"1-{rep}", flops=float(i), value=i + rng.normal(0, noise)))
+    long = pd.DataFrame(rows)
+    assert set(SETTING) <= set(long.columns)
+    r = perm_test_tau(long, {"batch_size": 1}, {"batch_size": 16}, n_perm=500)
+    assert r["tau_a"] > 0.9 and r["tau_b"] < 0.6 and r["p"] < 0.01

@@ -48,4 +48,4 @@ def make_synthetic(seed: int = 0, repeats: int = 8, max_new: int = 64, batch_siz
                         "torch_version": "n/a",
                     })
     df = pd.DataFrame(rows)
-    return df[COLUMNS]
+    return df.reindex(columns=COLUMNS)

@@ -3,10 +3,15 @@
 methods: [random, avgpool, cls_attn, fastv, pdrop_tiny, sparse_tiny]
 budgets: [8, 4]
 batch_sizes: [1, 2]
-attn_impls: [sdpa, eager]
-max_new_tokens: 8
-warmup: 1
-repeats: 3
+attn_impls: [sdpa, eager, flash]
+grids:
+  - {name: full}
+  - {name: b4_only, budgets: [4], batch_sizes: [1], methods: [fastv, sparse_tiny]}
+passes:
+  - {max_new: 1, warmup: 1, repeats: 4}
+  - {max_new: 8, warmup: 1, repeats: 3}
+memory_lengths: [1, 8]
+shuffle_seed: 0
 seed: 0
 tiny_layers: 12
 

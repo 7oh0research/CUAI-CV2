@@ -17,7 +17,7 @@ Core question: do current efficiency metrics (token count, FLOPs, average accura
 | `scripts/analyze_h1.py` | H1: FLOPs-rank vs latency-rank analysis, report + plots (CPU) |
 | `scripts/run_experiment.py` | Run (benchmark x method x ratio) grid, log per-sample JSONL (GPU) |
 | `scripts/analyze.py` | Metrics, CIs, hypothesis tests, meta-evaluation, report (CPU) |
-| `configs/` | Experiment configs (`h1.yaml`, `h1_tiny.yaml`, `pilot.yaml`) |
+| `configs/` | Experiment configs (`h1.yaml`, `h1_pilot.yaml`, `h1_tiny.yaml`, `pilot.yaml`) |
 | `tests/` | Unit tests for analysis, methods and the H1 engine (no GPU needed) |
 | `docs/` | Research plan, [H1 experiment](docs/h1_experiment.md), frozen metric spec, literature survey template |
 | `data/` | Datasets (git-ignored) |
@@ -50,6 +50,6 @@ python scripts/profile_efficiency.py --config configs/h1.yaml              # res
 python scripts/analyze_h1.py --records outputs/h1/records.jsonl --out outputs/h1/report
 ```
 
-See [docs/h1_experiment.md](docs/h1_experiment.md). Renting a cloud GPU (Vast.ai RTX 5090 over SSH): [docs/remote_gpu.md](docs/remote_gpu.md) (`scripts/setup_remote.sh`, `profile_efficiency.py --preflight`).
+See [docs/h1_experiment.md](docs/h1_experiment.md) (harness) and [docs/h1_protocol.md](docs/h1_protocol.md) (pre-registered protocol: factors, thresholds, claim–evidence table, schedule; `scripts/plan_h1.py` estimates run counts / GPU hours). Renting a cloud GPU (Vast.ai RTX 5090 over SSH): [docs/remote_gpu.md](docs/remote_gpu.md) (`scripts/setup_remote.sh`, `profile_efficiency.py --preflight`).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.

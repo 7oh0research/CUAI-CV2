@@ -36,5 +36,5 @@ python scripts/analyze_h1.py --records outputs/h1/records.jsonl --out outputs/h1
 - `records.jsonl`의 `device`에 GPU 이름이 기록된다. 한 번의 H1 실행은 같은 인스턴스에서 끝낸다 (GPU가 바뀌면 비교가 깨진다).
 - 측정 중 다른 프로세스 금지. `nvidia-smi`로 시작 전 사용률 0%인지 확인.
 - 클럭 변동이 의심되면 `nvidia-smi -q -d CLOCK,PERFORMANCE`로 throttling 확인 (컨테이너에서는 클럭 고정 권한이 없을 수 있음).
-- 첫 실행에서 `--tiny` 대신 `configs/h1.yaml`의 `repeats`를 3으로 줄인 스모크 실행을 먼저 하고, 전체 grid는 그 뒤에 돌린다.
+- 첫 실행에서는 `configs/h1_pilot.yaml`(36 config, 약 0.3h)을 먼저 돌려 백엔드·커널·OOM 경계를 확인하고, 그 뒤에 `configs/h1.yaml`을 돌린다.
 - 5090은 Blackwell이라 sdpa가 FlashAttention 계열 커널을 쓰는지는 torch 버전에 따라 다르다. 보고서에 torch/transformers/CUDA 버전과 GPU 이름을 함께 적는다.
