@@ -10,7 +10,7 @@ Conventions (stated so they can be matched to a paper's own counter):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -39,12 +39,20 @@ class LLMDims:
 
 @dataclass(frozen=True)
 class VisionDims:
+    """ViT + projector. Defaults describe CLIP (CLS token, plain 2-matrix MLP, full attention, 2-layer MLP projector).
+    Qwen-VL ViTs: no CLS (`cls=0`), `merge`=4 patches per LLM token, optional gated MLP (`mlp_mats=3`) and
+    window attention in all but `full_layers` layers."""
     hidden: int
     inter: int
     layers: int
-    tokens: int          # patches + CLS
+    tokens: int          # sequence length inside the ViT (patches + CLS)
     proj_out: int        # LLM hidden size (projector output)
     kept_tokens: int = 576
+    cls: int = 1
+    merge: int = 1
+    mlp_mats: int = 2
+    window: int = 0      # tokens per attention window (0 = full attention everywhere)
+    full_layers: int = 0  # layers that still use full attention when `window` > 0
 
     @classmethod
     def from_config(cls, vcfg, llm_hidden: int) -> "VisionDims":
@@ -52,9 +60,31 @@ class VisionDims:
         return cls(vcfg.hidden_size, vcfg.intermediate_size, vcfg.num_hidden_layers,
                    side * side + 1, llm_hidden, side * side)
 
+    @classmethod
+    def from_qwen_config(cls, vcfg, llm_hidden: int, out_tokens: int) -> "VisionDims":
+        """Qwen2-VL (`embed_dim`, `mlp_ratio`, `depth`) or Qwen2.5-VL (`hidden_size`, `intermediate_size`, `depth`)."""
+        merge = vcfg.spatial_merge_size ** 2
+        hidden = getattr(vcfg, "hidden_size", None) or vcfg.embed_dim
+        inter = getattr(vcfg, "intermediate_size", None) or int(hidden * vcfg.mlp_ratio)
+        win = getattr(vcfg, "window_size", 0) or 0
+        full = len(getattr(vcfg, "fullatt_block_indexes", None) or [])
+        window_tokens = (win // vcfg.patch_size) ** 2 if win else 0
+        return cls(hidden, inter, vcfg.depth, out_tokens * merge, llm_hidden, out_tokens, cls=0, merge=merge,
+                   mlp_mats=3 if win else 2, window=window_tokens, full_layers=full)
+
+    def resized(self, out_tokens: int) -> "VisionDims":
+        """Same tower, but producing `out_tokens` LLM tokens (e.g. after image downsampling)."""
+        return replace(self, tokens=out_tokens * self.merge + self.cls, kept_tokens=out_tokens)
+
 
 LLAVA15_7B = LLMDims(hidden=4096, inter=11008, layers=32, heads=32, kv_heads=32, head_dim=128, vocab=32064)
 CLIP_L14_336 = VisionDims(hidden=1024, inter=4096, layers=24, tokens=577, proj_out=4096)
+QWEN2_7B = LLMDims(hidden=3584, inter=18944, layers=28, heads=28, kv_heads=4, head_dim=128, vocab=152064)
+# 672x672 image -> 48x48 patches -> 576 merged tokens (same visual-token count as LLaVA-1.5)
+QWEN2VL_VIT = VisionDims(hidden=1280, inter=5120, layers=32, tokens=2304, proj_out=3584, kept_tokens=576,
+                         cls=0, merge=4)
+QWEN25VL_VIT = VisionDims(hidden=1280, inter=3420, layers=32, tokens=2304, proj_out=3584, kept_tokens=576,
+                          cls=0, merge=4, mlp_mats=3, window=64, full_layers=4)
 
 
 def layer_flops(d: LLMDims, q_tokens: int, kv_tokens: int) -> int:
@@ -88,8 +118,14 @@ def scoring_flops(d: LLMDims, rows: int, keys: int) -> int:
     return 2 * rows * keys * d.heads * d.head_dim
 
 
-def vision_flops(v: VisionDims) -> int:
+def vision_flops(v: VisionDims, tiles: int = 1) -> int:
+    """ViT + projector for `tiles` independent images (LLaVA-NeXT AnyRes runs the tower once per tile)."""
     n, d = v.tokens, v.hidden
-    per_layer = 2 * n * (4 * d * d + 2 * d * v.inter) + 4 * n * n * d
-    proj = 2 * v.kept_tokens * (d * v.proj_out + v.proj_out * v.proj_out)
-    return v.layers * per_layer + proj
+    dense = 2 * n * (4 * d * d + v.mlp_mats * d * v.inter)
+    full_layers = v.full_layers if v.window else v.layers
+    win_layers = v.layers - full_layers
+    attn = full_layers * 4 * n * n * d + win_layers * 4 * n * min(n, v.window) * d
+    pd = v.merge * d                       # projector input width (merge>1: Qwen patch merger)
+    hid = v.proj_out if v.merge == 1 else pd
+    proj = 2 * v.kept_tokens * (pd * hid + hid * v.proj_out)
+    return tiles * (v.layers * dense + attn + proj)

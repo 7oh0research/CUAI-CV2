@@ -1,0 +1,30 @@
+# H1 on Qwen2.5-VL-7B (native-resolution ViT, 672px -> 576 visual tokens, M-RoPE, GQA 28/4).
+# Set `family: qwen2_vl` and the Qwen2-VL checkpoint to run Qwen2-VL-7B instead.
+# CLS-based encoder methods (cls_attn, visionzip, vscan) are not applicable (no CLS token) and are skipped
+# automatically with a log line. Budgets as in h1.yaml (576 -> 192/128/64/32).
+#   python scripts/plan_h1.py --config configs/h1_qwen.yaml
+model:
+  family: qwen2_5_vl
+  name: Qwen/Qwen2.5-VL-7B-Instruct      # qwen2_vl: Qwen/Qwen2-VL-7B-Instruct
+  dtype: float16
+  image_size: 672
+
+methods: [random, avgpool, downsample, fastv, pdrop, sparsevlm_lite, divprune, dart]
+budgets: [192, 128, 64, 32]
+batch_sizes: [1, 4, 16, 32]   # GQA keeps the KV small, so larger batches fit than for LLaVA
+attn_impls: [eager, sdpa, flash]
+
+grids:
+  - {name: A_core, budgets: [192, 64]}
+  - {name: B_budget, budgets: [128, 32], attn_impls: [sdpa], batch_sizes: [1, 16]}
+
+passes:
+  - {name: prefill, max_new: 1,   warmup: 10, repeats: 50}
+  - {name: decode,  max_new: 512, warmup: 3,  repeats: 10}
+memory_lengths: [1, 32, 128, 512]
+
+shuffle_seed: 0
+seed: 0
+question: "Describe the image in detail."
+
+output_dir: outputs/h1_qwen

@@ -19,12 +19,13 @@
 
 ## 실험 설계
 
-- 모델: LLaVA-1.5-7B, fp16, **양자화 없음** (양자화 커널이 latency를 왜곡). 24GB+ GPU 권장.
-- 방법 (모두 training-free):
-  - 기준: `none` (576 tokens)
-  - 인코더 측: `random`, `avgpool`, `cls_attn` (CLS attention top-k) — attention 구현 불변
-  - LLM 내부: `fastv` (K=1 이후), `pdrop` (7/15/23층, PyramidDrop 스타일), `sparsevlm_lite` (2/6/15층, 텍스트 query 기반 점수)
-  - **주의:** LLM 내부 방법은 공식 코드가 아닌 최소 재구현이다 (`sparsevlm_lite`에는 recycling/merging 없음). 공식 구현으로 재현하려면 `custom_methods`로 스케줄을 조정하거나 교체한다.
+- 모델: LLaVA-1.5-7B (기본), LLaVA-NeXT-7B, Qwen2.5-VL / Qwen2-VL-7B (`model.family`, `configs/h1_next.yaml`, `h1_qwen.yaml`). fp16, **양자화 없음** (양자화 커널이 latency를 왜곡). 24GB+ GPU 권장.
+- 방법 (모두 training-free, **최소 재구현**):
+  - 기준: `none` (전체 토큰)
+  - 단순 baseline: `random`, `avgpool`, `downsample` (이미지 자체를 축소, ViT 비용도 감소)
+  - 인코더 측: `cls_attn`, `visionzip`(dominant + 문맥 병합), `vscan`(global+local 선택 후 15층에서 텍스트 기반 추가 pruning), `divprune`(max-min 다양성, N×N 거리 행렬 오버헤드) — Qwen은 CLS가 없어 cls_attn / visionzip / vscan 제외
+  - LLM 내부: `fastv` (K=1 이후), `pdrop` (7/15/23층), `sparsevlm_lite` (2/6/15층, 텍스트 query 점수), `dart` (K=1 이후, pivot 토큰과의 유사도로 중복 제거 — attention map 불필요라 FA/SDPA 호환)
+  - **주의:** 공식 코드가 아닌 최소 재구현이다 (`sparsevlm_lite`에는 recycling/merging 없음, VScan은 lite 버전). 규칙은 `methods.py` 상단 docstring. 공식 구현으로 재현하려면 `custom_methods`로 스케줄을 조정하거나 교체한다.
 - 축: 방법 x budget(192/128/64/32) x 배치(1/4/16/32) x attention(eager/sdpa/flash[/fa2]), 출력 512 tokens (L=1/32/128/512는 per-step 기록에서 파생). 전체 조합 대신 fractional design(`grids`, `configs/h1.yaml`) 사용.
 - 측정: `vision_ms`, `prefill_ms`, 스텝별 `decode_ms`, L별 `peak_mem_by_len`, `kv_mb`, 오버헤드 분해(`ovh_*`), 실행 커널(`kernel_family`), GPU 상태. prefill pass(warm-up 10, 반복 50)와 decode pass(warm-up 3, 반복 10) 분리, CUDA event 사용, OOM/unsupported는 기록 후 건너뜀, 중단 후 재개 지원.
 - 엔진: HF 모델 가중치만 사용하는 자체 추론 루프(`efficiency/engine.py`). 같은 코드 경로에서 sdpa/eager만 바꾸고, LLM 내부 pruning과 KV 길이를 직접 제어한다. pruning 없을 때 HF 결과와 일치함을 테스트로 확인했다.

@@ -1,10 +1,11 @@
 # Pilot (~15-25 min on a 5090): checks every backend runs, kernels are as expected, OOM boundaries, and gives
 # a first look at tau. Run this before the full config:  python scripts/profile_efficiency.py --config configs/h1_pilot.yaml
 model:
+  family: llava
   name: llava-hf/llava-1.5-7b-hf
   dtype: float16
 
-methods: [random, avgpool, fastv, pdrop, sparsevlm_lite]
+methods: [random, avgpool, downsample, fastv, pdrop, sparsevlm_lite, visionzip, vscan, divprune, dart]
 budgets: [64]
 batch_sizes: [1, 16]
 attn_impls: [eager, sdpa, flash]

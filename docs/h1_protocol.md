@@ -24,9 +24,9 @@
 
 | 요인 | 수준 | 비고 |
 | --- | --- | --- |
-| 모델 | **LLaVA-1.5-7B** (576 tok) | LLaVA-NeXT-7B(2880 tok), Qwen2.5-VL-7B는 **미구현**, §6 참조 |
-| 방법 | none, random, avgpool, cls_attn(인코더측), fastv, pdrop, sparsevlm_lite (LLM 내부) | 모두 **재구현**(공식 코드 아님). DivPrune, DART, VisionZip, VScan, downsample은 미구현 |
-| 유지 토큰 | 192 / 128 / 64 / 32 (576 기준) | NeXT는 같은 비율로 960/640/320/160 |
+| 모델 | **LLaVA-1.5-7B** (576 tok, `configs/h1.yaml`), LLaVA-NeXT-7B (2880 tok, `h1_next.yaml`), Qwen2.5-VL-7B / Qwen2-VL-7B (576 tok, `h1_qwen.yaml`) | `model.family`로 선택. Qwen은 CLS 토큰이 없어 cls_attn / visionzip / vscan은 **자동 제외**, §6 |
+| 방법 | none · 단순 baseline: random, avgpool, downsample(이미지 축소) · 인코더측: cls_attn, visionzip, vscan, divprune · LLM 내부: fastv, pdrop, sparsevlm_lite, dart | 모두 **최소 재구현**(공식 코드 아님), 규칙은 `methods.py` 상단 docstring |
+| 유지 토큰 | 192 / 128 / 64 / 32 (576 기준) | NeXT는 같은 비율로 960/640/320/160 (`h1_next.yaml`) |
 | Attention 백엔드 | `eager`, `sdpa`, `flash`(torch FlashAttention **강제**, 불가 시 `unsupported` 기록), `fa2`(flash-attn 패키지, 선택) | 조용한 fallback 금지 |
 | 배치 크기 | 1, 4, 16, 32 | 한계 초과는 `oom`으로 기록(그 자체가 capacity 결과) |
 | 출력 길이 L | 1(prefill 위주), 32, 128, 512 | EOS 무시 고정 길이. 512 토큰 한 번 생성에서 L=1/32/128/512를 모두 유도 |
@@ -34,13 +34,13 @@
 
 ### 1.1 Fractional design (`configs/h1.yaml`)
 
-전체 factorial은 3 백엔드 × 4 배치 × 25(= 6 방법 × 4 budget + none) = **300 config**. 아래 설계로 **180 config**로 줄인다.
+전체 factorial은 3 백엔드 × 4 배치 × 45(= 11 방법 × 4 budget + none) = **540 config**. 아래 설계로 **320 config**로 줄인다.
 **배치 × 출력 길이 × 백엔드 교차는 완전 포함**한다(출력 길이는 한 번의 512-토큰 실행에서 파생되므로 추가 비용이 없다).
 
 | Tier | 방법 | budget | 백엔드 | 배치 | config 수 |
 | --- | --- | --- | --- | --- | --- |
-| A (핵심) | 전부(6 + none) | {192, 64} | eager, sdpa, flash | 1, 4, 16, 32 | 156 |
-| B (budget 축) | 전부 | {128, 32} | sdpa | 1, 16 | 24 |
+| A (핵심) | 전부(11 + none) | {192, 64} | eager, sdpa, flash | 1, 4, 16, 32 | 276 |
+| B (budget 축) | 전부 | {128, 32} | sdpa | 1, 16 | 44 |
 
 ### 1.2 측정 pass와 총 실행 횟수
 
@@ -49,8 +49,8 @@
 | prefill | 1 | 10 | 50 | prefill/vision 시간의 촘촘한 CI |
 | decode | 512 | 3 | 10 | decode ms/token, L ≤ 512의 e2e |
 
-- config당 측정 60회 → **총 측정 10,800회**(+ warm-up 2,340회). config당 진단 1회(커널 trace, 오버헤드 분해, L별 peak memory 4회).
-- **예상 GPU 시간 ≈ 11시간** (`python scripts/plan_h1.py`; 5090 실측 전 가정값이므로 **추정치**, 파일럿 후 `--step-ms`, `--tflops`로 재보정).
+- config당 측정 60회 → **총 측정 19,200회**(+ warm-up 4,160회). config당 진단 1회(커널 trace, 오버헤드 분해, L별 peak memory 4회).
+- **예상 GPU 시간 ≈ 20시간**(LLaVA-1.5; NeXT ≈ 16 h, Qwen ≈ 16 h, 세 모델 합 ≈ 53 h) (`python scripts/plan_h1.py`; 5090 실측 전 가정값이므로 **추정치**, 파일럿 후 `--step-ms`, `--tflops`로 재보정).
   Vast.ai 시간당 단가 × 1.5배 여유를 예산으로 잡을 것.
 - 용량 추정(추정치): LLaVA-7B fp16 KV ≈ 0.52 MB/토큰. 배치 32, 시각 576 + 출력 512 → KV ≈ 19 GB + 가중치 14 GB > 32 GB이므로
   **vanilla는 bs=32에서 OOM**, 압축 방법은 적재 가능할 것으로 예상(capacity 효과, 실측으로 확인).
@@ -125,8 +125,9 @@
 | 항목 | 상태 | 대응 |
 | --- | --- | --- |
 | LLaVA-1.5-7B 엔진 | 구현, HF 출력과 토큰 단위 일치 테스트 통과 | |
-| LLaVA-NeXT, Qwen2/2.5-VL | **미구현** (AnyRes 특징은 같은 LLaMA 루프에 연결 가능, Qwen은 M-RoPE·GQA 등 별도 엔진 필요) | 이후 tier. 모델 간 일반화 주장은 그 전까지 보류 |
-| DivPrune, DART, VisionZip, VScan, image downsample | **미구현** | 이후 추가, 현재 6개 방법으로는 "계열이 고르게 섞였다"고 주장하지 말 것 |
+| LLaVA-NeXT 엔진 | 구현(`families.py`: 타일마다 ViT 1회, 2880 tok). `image_newline`·unpadding은 모델링하지 않음(<5%). HF와 토큰 단위 대조는 **하지 않음** | 지연시간은 형상에만 의존하므로 효율 결론에는 영향 없음 |
+| Qwen2-VL / Qwen2.5-VL 엔진 | 구현(`engine_qwen.py`: M-RoPE, GQA, window-attn ViT). **tiny 모델에서 HF `generate`와 토큰 일치 테스트 통과**(`tests/test_families.py`), 실제 가중치는 **미검증** | 5090에서 파일럿으로 확인. 인코더측 선택 후 위치는 근사 정사각 격자로 재부여(정확도 영향만, 지연시간 중립) |
+| DivPrune, DART, VisionZip, VScan, image downsample | 구현(최소 재구현). DART는 attention map이 불필요(pivot 유사도)해 FA/SDPA 호환. 원 논문 정확도 재현은 **미검증** | 공식 구현과 소규모 subset 대조, 논문에는 "재구현"임을 명시. CDPruner는 **미포함**(선택) |
 | 방법 구현 품질 | fastv / pdrop / sparsevlm_lite는 **최소 재구현**이며 공식 코드가 아님 | 공식 구현과 소규모 subset에서 대조 검증, 논문에는 재구현임을 명시 |
 | 정확도(POPE/MME/TextVQA, ±1%p) | **미구현**: 효율 하네스는 정확도를 측정하지 않음 | 별도 단계로 수행하고 ±1%p 이내 operating point끼리만 효율 비교 |
 | 하드웨어 일반성 | **GPU 1종(5090)** | 선택적으로 Vast.ai의 두 번째 GPU(3090/4090/A100)에서 tier A 일부 반복 |
@@ -154,10 +155,10 @@
 | S1 | Vast.ai 5090 인스턴스, `setup_remote.sh`, `--preflight` | 환경 보고 | ~0.5 h |
 | S2 | **파일럿** `configs/h1_pilot.yaml` (36 config) | 커널 검증, OOM 경계, 시간 보정 | ~0.3 h |
 | S3 | `plan_h1.py` 재보정, config 조정 | 최종 예산 | 0 |
-| S4 | **본 실험** `configs/h1.yaml` (180 config, 재개 가능) | `records.jsonl` | ~11 h |
+| S4 | **본 실험** `configs/h1.yaml` (320 config, 재개 가능) | `records.jsonl` | ~20 h |
 | S5 | `analyze_h1.py` → 보고서, 판정 | `report.md`, CSV, 그림 | 0 |
 | S6 | 실제 이미지 sanity check, 공식 구현 대조 | 타당성 부록 | ~1 h |
-| S7 (선택) | 두 번째 GPU 반복, LLaVA-NeXT/Qwen, 추가 방법, 정확도 | 일반화 결과 | 별도 |
+| S7 | LLaVA-NeXT(`h1_next.yaml`), Qwen(`h1_qwen.yaml`); 선택: 두 번째 GPU, 정확도 | 일반화 결과 | 각 ~16 h |
 
 ## 9. 실행 명령
 
@@ -168,6 +169,8 @@ python scripts/profile_efficiency.py --config configs/h1_pilot.yaml
 python scripts/analyze_h1.py --records outputs/h1_pilot/records.jsonl --out outputs/h1_pilot/report
 python scripts/profile_efficiency.py --config configs/h1.yaml        # 중단되면 같은 명령으로 재개
 python scripts/analyze_h1.py --records outputs/h1/records.jsonl --out outputs/h1/report
+# 다른 모델: configs/h1_next.yaml, configs/h1_qwen.yaml (--family로 model.family 덮어쓰기 가능)
+# CPU 스모크: python scripts/profile_efficiency.py --config configs/h1_tiny.yaml --tiny --family qwen2_5_vl
 ```
 
 측정 코드 골격(타이밍 하네스, 커널 로깅)은 새로 쓰지 않고 실제 구현을 그대로 쓴다:

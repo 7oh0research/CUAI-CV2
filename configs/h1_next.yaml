@@ -1,0 +1,30 @@
+# H1 on LLaVA-NeXT-7B (AnyRes, 5 tiles x 576 = 2880 visual tokens): the long-visual-context regime where
+# token reduction should matter most. Budgets are the LLaVA-1.5 budgets x5 so the keep ratio is identical
+# (192/576 = 960/2880 = 1/3, 128 -> 640, 64 -> 320, 32 -> 160).
+# Same protocol as h1.yaml; separate output_dir because records are keyed per model/backend/method/budget.
+#   python scripts/plan_h1.py --config configs/h1_next.yaml
+model:
+  family: llava_next
+  name: llava-hf/llava-v1.6-vicuna-7b-hf
+  dtype: float16
+  tiles: 5
+
+methods: [random, avgpool, downsample, cls_attn, fastv, pdrop, sparsevlm_lite, visionzip, vscan, divprune, dart]
+budgets: [960, 640, 320, 160]
+batch_sizes: [1, 2, 4, 8]     # KV of the 2880-token vanilla at bs 8 is ~12GB; larger batches are recorded as `oom`
+attn_impls: [eager, sdpa, flash]
+
+grids:
+  - {name: A_core, budgets: [960, 320]}
+  - {name: B_budget, budgets: [640, 160], attn_impls: [sdpa], batch_sizes: [1, 4]}
+
+passes:
+  - {name: prefill, max_new: 1,   warmup: 5, repeats: 30}
+  - {name: decode,  max_new: 512, warmup: 2, repeats: 8}
+memory_lengths: [1, 32, 128, 512]
+
+shuffle_seed: 0
+seed: 0
+question: "Describe the image in detail."
+
+output_dir: outputs/h1_next

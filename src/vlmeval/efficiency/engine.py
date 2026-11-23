@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .flops import LLMDims
-from .methods import ENCODERS, MethodSpec
+from .methods import CLS_BASED, DART_PIVOTS, ENCODERS, PIXEL_SPACE, MethodSpec, pool_shape
 
 
 def _rotate_half(x):
@@ -54,6 +54,9 @@ ATTN_IMPLS = ("eager", "sdpa", "flash", "fa2")
 
 
 class Engine:
+    """LLaVA-1.5 / LLaVA-NeXT (multi-tile) front end over a LLaMA-style LLM. `QwenEngine` overrides the
+    vision front end and the position handling (M-RoPE)."""
+
     def __init__(self, model, attn_impl: str = "sdpa"):
         assert attn_impl in ATTN_IMPLS, attn_impl
         self.model, self.attn_impl = model, attn_impl
@@ -66,23 +69,43 @@ class Engine:
         else:  # older transformers: language_model is a LlamaForCausalLM
             base, self.head = lm.model, lm.lm_head
         self.layers, self.norm, self.rot, self.embed = base.layers, base.norm, base.rotary_emb, base.embed_tokens
+        self.dims = LLMDims.from_config(base.config)
+        self._masks: dict = {}
+        self._bind_vision(model, inner, base)
+
+    def _bind_vision(self, model, inner, base) -> None:
         self.vt, self.proj = inner.vision_tower, inner.multi_modal_projector
         self.clip = getattr(self.vt, "vision_model", self.vt)
         self.feature_layer = model.config.vision_feature_layer
-        self.dims = LLMDims.from_config(base.config)
-        self._masks: dict = {}
 
     # ---- visual side ---------------------------------------------------------------------------
 
     @torch.no_grad()
     def visual(self, pixel_values, spec: MethodSpec, budget: int, gen=None) -> torch.Tensor:
-        """Vision tower + projector (+ encoder-side pruning). -> [B, n_visual, hidden]."""
-        hs = self.vt(pixel_values, output_hidden_states=True).hidden_states
+        """Vision tower + projector (+ encoder-side pruning). -> [B, n_visual, hidden].
+        `pixel_values` is [B,3,H,W], or [B,T,3,H,W] for T AnyRes tiles (LLaVA-NeXT; tiles are concatenated)."""
+        tiles = 1
+        if pixel_values.ndim == 5:
+            tiles = pixel_values.shape[1]
+            pixel_values = pixel_values.flatten(0, 1)
+        b = pixel_values.shape[0] // tiles
+        kw = {}
+        if spec.kind == "encoder" and spec.encoder in PIXEL_SPACE:
+            side = self.clip.config.image_size // self.clip.config.patch_size
+            h, w = pool_shape(side * side, max(1, budget // tiles))
+            p = self.clip.config.patch_size
+            pixel_values = F.interpolate(pixel_values.float(), size=(h * p, w * p), mode="bilinear",
+                                         antialias=True, align_corners=False).to(pixel_values.dtype)
+            kw["interpolate_pos_encoding"] = True
+        hs = self.vt(pixel_values, output_hidden_states=True, **kw).hidden_states
         feats = self.proj(hs[self.feature_layer][:, 1:])
-        if spec.kind != "encoder":
+        feats = feats.reshape(b, -1, feats.shape[-1])
+        if spec.kind != "encoder" or spec.encoder in PIXEL_SPACE:
             return feats
-        cls = self._cls_scores(hs) if spec.encoder == "cls_attn" else None
-        return ENCODERS[spec.encoder](feats, budget, cls_scores=cls, gen=gen)
+        cls = None
+        if spec.encoder in CLS_BASED:
+            cls = self._cls_scores(hs).reshape(b, -1)
+        return ENCODERS[spec.encoder](feats, round(spec.enc_keep * budget), cls_scores=cls, gen=gen, tiles=tiles)
 
     def _cls_scores(self, hs) -> torch.Tensor:
         """Head-averaged CLS->patch attention of the layer that produced the consumed features."""
@@ -154,6 +177,31 @@ class Engine:
         s = s.masked_fill(self._mask(rows, t, q_rows.device), float("-inf"))
         return s.float().softmax(-1)
 
+    # ---- positions (overridden for M-RoPE) -------------------------------------------------------
+
+    def _init_pos(self, b, t, P, n_vis, S, device):
+        """-> (position ids of the prompt, position of the first generated token)."""
+        return torch.arange(t, device=device).expand(b, -1), t
+
+    def _gather_pos(self, pos, sel):
+        return pos.gather(1, sel)
+
+    def _decode_pos(self, b, next_pos, device):
+        return torch.full((b, 1), next_pos, device=device, dtype=torch.long)
+
+    def _cos_sin(self, x, pos):
+        return self.rot(x, pos)
+
+    def _dart_scores(self, kfeat):
+        """DART-style duplication score from pre-RoPE key states [B, V, C]: tokens most similar to a pivot are
+        redundant. Higher = keep. Needs no attention map, so it is compatible with every kernel."""
+        c = kfeat.shape[-1]
+        piv = kfeat.abs().sum(-1).topk(min(DART_PIVOTS, kfeat.shape[1]), dim=1).indices
+        x = F.normalize(kfeat, dim=-1)
+        sim = x @ x.gather(1, piv[..., None].expand(-1, -1, c)).transpose(1, 2)
+        score = -sim.max(-1).values
+        return score.scatter(1, piv, float("inf"))
+
     # ---- prefill / decode ----------------------------------------------------------------------
 
     @torch.no_grad()
@@ -167,7 +215,7 @@ class Engine:
         stage_at, vis = dict(stages), n_vis
         rows_for_score = 1 if scorer == "last" else S
         x = embeds
-        pos = torch.arange(x.shape[1], device=dev).expand(b, -1)
+        pos, st.next_pos = self._init_pos(b, x.shape[1], P, n_vis, S, dev)
         self._masks.clear()
 
         for l, layer in enumerate(self.layers):
@@ -177,7 +225,8 @@ class Engine:
             q = a.q_proj(h).view(b, t, d.heads, d.head_dim).transpose(1, 2)
             k = a.k_proj(h).view(b, t, d.kv_heads, d.head_dim).transpose(1, 2)
             v = a.v_proj(h).view(b, t, d.kv_heads, d.head_dim).transpose(1, 2)
-            q, k = _rope(q, k, *self.rot(x, pos))
+            k_pre = k
+            q, k = _rope(q, k, *self._cos_sin(x, pos))
 
             kb = k.new_empty(b, d.kv_heads, t + max_new, d.head_dim)
             vb = v.new_empty(b, d.kv_heads, t + max_new, d.head_dim)
@@ -186,12 +235,13 @@ class Engine:
 
             kk, vv = self._expand(k), self._expand(v)
             want = l in stage_at
+            need_attn = want and scorer != "dart"
             if self.attn_impl == "eager":
-                o, w = self._eager(q, kk, vv, True, rows_for_score if want else 0)
+                o, w = self._eager(q, kk, vv, True, rows_for_score if need_attn else 0)
             else:
                 with self._kernel_ctx():
                     o = self._fused(q, kk, vv, True)
-                if want:
+                if need_attn:
                     with self._t("score"):   # extra pass: fused kernels do not return probabilities
                         w = self._row_probs(q[:, :, -rows_for_score:], kk)
             x = x + a.o_proj(o.transpose(1, 2).reshape(b, t, -1))
@@ -199,17 +249,22 @@ class Engine:
 
             if want:
                 keep = stage_at[l]
-                with self._t("select"):
-                    score = w.float().mean(dim=(1, 2))[:, P:P + vis]
-                    idx = score.topk(keep, dim=1).indices.sort(dim=1).values
+                if scorer == "dart":
+                    with self._t("score"):
+                        score = self._dart_scores(k_pre.transpose(1, 2).reshape(b, t, -1)[:, P:P + vis].float())
+                    with self._t("select"):
+                        idx = score.topk(keep, dim=1).indices.sort(dim=1).values
+                else:
+                    with self._t("select"):
+                        score = w.float().mean(dim=(1, 2))[:, P:P + vis]
+                        idx = score.topk(keep, dim=1).indices.sort(dim=1).values
                 with self._t("gather"):
                     sel = torch.cat([torch.arange(P, device=dev).expand(b, -1), P + idx,
                                      torch.arange(P + vis, t, device=dev).expand(b, -1)], dim=1)
                     x = x.gather(1, sel[..., None].expand(-1, -1, x.shape[-1]))
-                    pos = pos.gather(1, sel)
+                    pos = self._gather_pos(pos, sel)
                 vis = keep
 
-        st.next_pos = embeds.shape[1]
         return self._logits(x), st
 
     @torch.no_grad()
@@ -217,8 +272,8 @@ class Engine:
         d = self.dims
         b = tok.shape[0]
         x = self.embed(tok)[:, None]
-        pos = torch.full((b, 1), st.next_pos, device=x.device, dtype=torch.long)
-        cos, sin = self.rot(x, pos)
+        pos = self._decode_pos(b, st.next_pos, x.device)
+        cos, sin = self._cos_sin(x, pos)
         for l, layer in enumerate(self.layers):
             a = layer.self_attn
             h = layer.input_layernorm(x)

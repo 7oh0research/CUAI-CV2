@@ -19,8 +19,9 @@ import torch
 from . import flops as fl
 from .engine import Engine
 from .env import collect_env, gpu_state
+from .families import family_from_model
 from .kernels import trace_kernels
-from .methods import BUILTIN, MethodSpec, layer_tokens, resolve, spec_from_config
+from .methods import BUILTIN, DART_PIVOTS, MethodSpec, layer_tokens, resolve, spec_from_config
 from .schema import append, done_keys
 
 
@@ -45,16 +46,27 @@ class Clock:
 
 
 def theoretical(dims: fl.LLMDims, vdims: fl.VisionDims, spec: MethodSpec, budget: int, n_vis: int, n_text: int,
-                attn_impl: str, P_rows: int) -> dict:
+                attn_impl: str, P_rows: int, tiles: int = 1) -> dict:
     """Analytic FLOPs and token schedule for one config. P_rows = query rows used for scoring."""
-    n_in, stages = resolve(spec, budget, n_vis, dims.layers)
+    n_in, stages = resolve(spec, budget, n_vis, dims.layers, tiles)
     lt = layer_tokens(n_text, n_in, stages, dims.layers)
-    # With eager attention the map is a free by-product; with fused kernels scoring is an extra pass.
-    score = 0 if attn_impl == "eager" else sum(fl.scoring_flops(dims, P_rows, lt[l]) for l, _ in stages)
+    if spec.scorer == "dart":
+        # similarity to pivot tokens: independent of the attention kernel
+        score = sum(2 * lt[l] * DART_PIVOTS * dims.kv_heads * dims.head_dim for l, _ in stages)
+    elif attn_impl == "eager":   # the map is a free by-product; fused kernels need an extra scoring pass
+        score = 0
+    else:
+        score = sum(fl.scoring_flops(dims, P_rows, lt[l]) for l, _ in stages)
+    if spec.name == "downsample":   # the ViT itself runs on the smaller image
+        vision = fl.vision_flops(vdims.resized(n_in // tiles), tiles)
+    else:
+        vision = fl.vision_flops(vdims, tiles)
+    if spec.kind == "encoder" and spec.encoder == "divprune":   # N x N cosine-distance matrix
+        vision += 2 * n_vis * n_vis * vdims.proj_out
     return {
         "n_visual_in": n_in,
         "n_visual_final": stages[-1][1] if stages else n_in,
-        "vision_flops": fl.vision_flops(vdims),
+        "vision_flops": vision,
         "prefill_flops": fl.prefill_flops(dims, lt, score),
         "decode_flops_step0": fl.decode_flops(dims, [n + 1 for n in lt]),
         "decode_flops_slope": fl.decode_slope(dims),
@@ -63,7 +75,7 @@ def theoretical(dims: fl.LLMDims, vdims: fl.VisionDims, spec: MethodSpec, budget
 
 
 def run_once(engine: Engine, spec: MethodSpec, budget: int, pixel_values, prefix_ids, suffix_ids, max_new: int,
-             gen) -> dict:
+             gen, tiles: int = 1) -> dict:
     dev = pixel_values.device
     cuda = dev.type == "cuda"
     if cuda:
@@ -76,7 +88,7 @@ def run_once(engine: Engine, spec: MethodSpec, budget: int, pixel_values, prefix
     clock.stamp()
     embeds = engine.build_embeds(feats, prefix_ids, suffix_ids)
     n_in = feats.shape[1]
-    _, stages = resolve(spec, budget, n_in, engine.dims.layers)
+    _, stages = resolve(spec, budget, n_in, engine.dims.layers, tiles)
     _, st = engine.generate(embeds, prefix_ids.shape[1], n_in, suffix_ids.shape[1], stages, spec.scorer, max_new,
                             stamp=clock.stamp)
     d = clock.deltas_ms()
@@ -111,27 +123,27 @@ def expand_grids(cfg: dict, n_vis: int) -> list[tuple]:
     return combos
 
 
-def diagnostics(engine: Engine, spec, budget, pix, prefix_ids, suffix_ids, cfg: dict, gen) -> dict:
+def diagnostics(engine: Engine, spec, budget, pix, prefix_ids, suffix_ids, cfg: dict, gen, tiles: int = 1) -> dict:
     """One-off per config: kernel verification, overhead decomposition, memory by output length."""
     out = {}
     # Trace the LLM only: the HF vision tower has its own (always-SDPA) attention and would pollute the family.
     feats = engine.visual(pix, spec, budget, gen)
     embeds = engine.build_embeds(feats, prefix_ids, suffix_ids)
-    _, stages = resolve(spec, budget, feats.shape[1], engine.dims.layers)
+    _, stages = resolve(spec, budget, feats.shape[1], engine.dims.layers, tiles)
     tr = trace_kernels(lambda: engine.generate(embeds, prefix_ids.shape[1], feats.shape[1], suffix_ids.shape[1],
                                                stages, spec.scorer, 2), engine.attn_impl)
     out["kernel_family"], out["kernel_ok"] = tr["family"], tr["ok"]
-    run_once(engine, spec, budget, pix, prefix_ids, suffix_ids, 1, gen)       # warm
+    run_once(engine, spec, budget, pix, prefix_ids, suffix_ids, 1, gen, tiles)       # warm
     engine.timers = {}
     try:
-        run_once(engine, spec, budget, pix, prefix_ids, suffix_ids, 1, gen)
+        run_once(engine, spec, budget, pix, prefix_ids, suffix_ids, 1, gen, tiles)
         out.update({f"ovh_{k}_ms": engine.timers.get(k, 0.0) for k in ("score", "select", "gather")})
     finally:
         engine.timers = None
     mem = {}
     for L in cfg.get("memory_lengths", []):
         try:
-            mem[str(L)] = run_once(engine, spec, budget, pix, prefix_ids, suffix_ids, L, gen)["peak_mem_mb"]
+            mem[str(L)] = run_once(engine, spec, budget, pix, prefix_ids, suffix_ids, L, gen, tiles)["peak_mem_mb"]
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
             mem[str(L)] = None
@@ -143,20 +155,27 @@ def profile_grid(model, prefix_ids, suffix_ids, cfg: dict, out_path: str, model_
                  progress=print) -> None:
     dev = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
-    vcfg = model.config.vision_config
-    n_vis = (vcfg.image_size // vcfg.patch_size) ** 2
+    mcfg = cfg.get("model", {})
+    fam_name = mcfg.get("family", "llava")
+    fam = family_from_model(model, fam_name, mcfg)
+    n_vis, tiles = fam.n_vis, fam.tiles
     combos = expand_grids(cfg, n_vis)
-    impls = sorted({c[0] for c in combos})
-    engines = {impl: Engine(model, impl) for impl in impls}
-    dims = engines[impls[0]].dims
-    vdims = fl.VisionDims.from_config(vcfg, dims.hidden)
-    n_text = prefix_ids.shape[1] + suffix_ids.shape[1]
     custom = cfg.get("custom_methods", {})
     specs = {"none": BUILTIN["none"], **{m: spec_from_config(m, custom.get(m)) for m in
                                          {c[2] for c in combos} - {"none"}}}
+    skipped = sorted({c[2] for c in combos if not fam.supports(specs[c[2]])})
+    if skipped:
+        progress(f"{fam_name}: skipping methods not applicable to this family: {', '.join(skipped)}")
+        combos = [c for c in combos if fam.supports(specs[c[2]])]
+    impls = sorted({c[0] for c in combos})
+    engines = {impl: fam.engine_cls(model, impl) for impl in impls}
+    dims = engines[impls[0]].dims
+    vdims = fam.vdims
+    n_text = prefix_ids.shape[1] + suffix_ids.shape[1]
     passes = _passes(cfg)
     done = done_keys(out_path)
-    meta = {**collect_env(dev), "dtype": str(dtype).replace("torch.", "")}
+    meta = {**collect_env(dev), "dtype": str(dtype).replace("torch.", ""), "family": fam_name, "tiles": tiles,
+            "n_visual_full": n_vis}
 
     for i, (impl, bs, name, budget) in enumerate(combos):
         spec = specs[name]
@@ -165,10 +184,10 @@ def profile_grid(model, prefix_ids, suffix_ids, cfg: dict, out_path: str, model_
             continue
         progress(f"[{i + 1}/{len(combos)}] {impl} bs={bs} {name} budget={budget}")
         th = theoretical(dims, vdims, spec, budget, n_vis, n_text, impl,
-                         suffix_ids.shape[1] if spec.scorer == "text" else 1)
+                         suffix_ids.shape[1] if spec.scorer == "text" else 1, tiles)
         th.pop("stages")
         g = torch.Generator().manual_seed(cfg["seed"])
-        pix = torch.randn(bs, 3, vcfg.image_size, vcfg.image_size, generator=g).to(dev, dtype)
+        pix = fam.pixels(bs, g).to(dev, dtype)
         base = {"model": model_name, "attn_impl": impl, "method": name, "budget": budget, "batch_size": bs,
                 "n_text": n_text, **th, **meta}
         for p in todo:
@@ -176,12 +195,13 @@ def profile_grid(model, prefix_ids, suffix_ids, cfg: dict, out_path: str, model_
             try:
                 for r in range(-p["warmup"], p["repeats"]):
                     gen = torch.Generator(device=dev).manual_seed(cfg["seed"] + max(r, 0))
-                    out = run_once(engines[impl], spec, budget, pix, prefix_ids, suffix_ids, p["max_new"], gen)
+                    out = run_once(engines[impl], spec, budget, pix, prefix_ids, suffix_ids, p["max_new"], gen,
+                                   tiles)
                     if r >= 0:
                         rows.append({**base, "max_new": p["max_new"], "repeat": r, "status": "ok", **out})
                 if p is passes[-1] or len(passes) == 1:
                     diag = diagnostics(engines[impl], spec, budget, pix, prefix_ids, suffix_ids, cfg,
-                                       torch.Generator(device=dev).manual_seed(cfg["seed"]))
+                                       torch.Generator(device=dev).manual_seed(cfg["seed"]), tiles)
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
                 progress("  OOM -> recorded, skipping config")

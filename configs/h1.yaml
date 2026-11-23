@@ -2,12 +2,13 @@
 # Protocol, hypotheses and thresholds: docs/h1_protocol.md.  Count configs / GPU hours first:
 #   python scripts/plan_h1.py --config configs/h1.yaml
 model:
+  family: llava            # llava | llava_next | qwen2_vl | qwen2_5_vl
   name: llava-hf/llava-1.5-7b-hf
   dtype: float16
 
 # `none` (576 tokens) is always added once per (backend, batch). Built-ins are minimal re-implementations
 # (src/vlmeval/efficiency/methods.py), NOT the official code of FastV / SparseVLM / PyramidDrop.
-methods: [random, avgpool, cls_attn, fastv, pdrop, sparsevlm_lite]
+methods: [random, avgpool, downsample, cls_attn, fastv, pdrop, sparsevlm_lite, visionzip, vscan, divprune, dart]
 
 # Retained visual tokens (out of 576). In-LLM methods: stage keep = multiplier * budget.
 budgets: [192, 128, 64, 32]

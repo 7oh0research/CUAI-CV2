@@ -1,6 +1,6 @@
 # CPU smoke test for the H1 pipeline with a tiny random-weight LLaVA (16 visual tokens, 12 layers).
 # Latencies are meaningless here; this only checks that profiling -> records -> analysis runs end to end.
-methods: [random, avgpool, cls_attn, fastv, pdrop_tiny, sparse_tiny]
+methods: [random, avgpool, downsample, cls_attn, divprune, visionzip, vscan, fastv, dart, pdrop_tiny, sparse_tiny]
 budgets: [8, 4]
 batch_sizes: [1, 2]
 attn_impls: [sdpa, eager, flash]
