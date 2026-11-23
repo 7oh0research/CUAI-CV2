@@ -1,25 +1,36 @@
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 mkdir -p third_party env
-declare -A REPOS=(
- [baseline]=https://github.com/haotian-liu/LLaVA
- [fastv]=https://github.com/pkunlp-icler/FastV
- [pdrop]=https://github.com/Cooperx521/PyramidDrop
- [sparsevlm]=https://github.com/Gumpest/SparseVLMs
- [visionzip]=https://github.com/dvlab-research/VisionZip
- [divprune]=https://github.com/vbdi/divprune
- [cdpruner]=https://github.com/Theia-4869/CDPruner )
-echo "{" > env/methods.json
-for m in "${!REPOS[@]}"; do
-  [ -d third_party/$m ] || git clone --depth 1 ${REPOS[$m]} third_party/$m || { echo "$m clone failed" >> ISSUES.md; continue; }
-  h=$(git -C third_party/$m rev-parse HEAD)
-  echo "  \"$m\": {\"url\": \"${REPOS[$m]}\", \"commit\": \"$h\"}," >> env/methods.json
-done
-if [ -n "$ANCHORPRUNE_PATH" ] && [ -d "$ANCHORPRUNE_PATH" ]; then
-  ln -sfn "$ANCHORPRUNE_PATH" third_party/anchorprune
-  h=$(git -C "$ANCHORPRUNE_PATH" rev-parse HEAD 2>/dev/null || echo none)
-  echo "  \"anchorprune\": {\"url\": \"$ANCHORPRUNE_PATH\", \"commit\": \"$h\"}" >> env/methods.json
-else
-  echo "  \"anchorprune\": {\"status\": \"blocked\"}" >> env/methods.json
-fi
-echo "}" >> env/methods.json
+
+python3 - <<'PY'
+import json, os, subprocess
+repos = {
+    "baseline": "https://github.com/haotian-liu/LLaVA",
+    "fastv": "https://github.com/pkunlp-icler/FastV",
+    "pdrop": "https://github.com/Cooperx521/PyramidDrop",
+    "sparsevlm": "https://github.com/Gumpest/SparseVLMs",
+    "visionzip": "https://github.com/dvlab-research/VisionZip",
+    "divprune": "https://github.com/vbdi/divprune",
+    "cdpruner": "https://github.com/Theia-4869/CDPruner",
+}
+records = {}
+for name, url in repos.items():
+    path = f"third_party/{name}"
+    if not os.path.isdir(os.path.join(path, ".git")):
+        subprocess.run(["git", "clone", "--depth", "1", url, path], check=True)
+    commit = subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
+    records[name] = {"url": url, "commit": commit}
+anchor = os.environ.get("ANCHORPRUNE_PATH", "")
+if anchor and os.path.isdir(anchor):
+    anchor = os.path.abspath(anchor)
+    os.symlink(anchor, "third_party/anchorprune") if not os.path.lexists("third_party/anchorprune") else None
+    try: commit = subprocess.check_output(["git", "-C", anchor, "rev-parse", "HEAD"], text=True).strip()
+    except Exception: commit = "unknown"
+    records["anchorprune"] = {"path": anchor, "commit": commit}
+else:
+    records["anchorprune"] = {"status": "blocked", "reason": "ANCHORPRUNE_PATH not provided"}
+with open("env/methods.json", "w") as f: json.dump(records, f, indent=2)
+print(json.dumps(records, indent=2))
+PY
