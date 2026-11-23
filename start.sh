@@ -14,14 +14,19 @@ case "$PROFILE" in
         "$CONDA" env list | awk '{print $1}' | grep -qx "$e" || { NEED=1; break; }
         pyver="$("$CONDA" run -n "$e" python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null | tail -n1 || true)"
         [[ "$pyver" == "3.10" ]] || { echo "[WARN] $e uses Python ${pyver:-unknown}; setup will repair it."; NEED=1; break; }
-        if ! "$CONDA" run -n "$e" python -c 'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.1.2"; assert torchvision.__version__.split("+")[0] == "0.16.2"; assert torch.version.cuda is not None' >/dev/null 2>&1; then
+        if ! "$CONDA" run -n "$e" python -c 'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.7.1"; assert torchvision.__version__.split("+")[0] == "0.22.1"; assert torch.version.cuda == "12.8"; assert "sm_120" in torch.cuda.get_arch_list()' >/dev/null 2>&1; then
           echo "[WARN] $e is missing the required CUDA PyTorch stack; setup will repair it."
           NEED=1
           break
         fi
       done
     fi
-    if [[ "$NEED" == 1 ]]; then bash setup_h3.sh; CONDA="$HOME/miniforge3/bin/conda"; fi
+    if [[ "$NEED" == 1 ]]; then
+      bash setup_h3.sh
+      CONDA="${CONDA_EXE:-$(command -v conda || true)}"
+      if [[ -z "$CONDA" && -x "$HOME/miniforge3/bin/conda" ]]; then CONDA="$HOME/miniforge3/bin/conda"; fi
+      [[ -n "$CONDA" ]] || { echo "[ERROR] Conda not found after setup." >&2; exit 1; }
+    fi
     if [[ ! -f .env ]]; then cp .env.example .env; fi
     if [[ -f .env ]]; then set -a; source .env; set +a; fi
     if [[ -z "${MME_ROOT:-}" || ! -d "$MME_ROOT" ]]; then

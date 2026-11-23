@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild/repair all H3 environments using the pinned Python 3.10 stack and official PyTorch Conda packages.
+# Rebuild/repair all H3 environments using the Python 3.10 stack and RTX 5090-compatible PyTorch CUDA 12.8 wheels.
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
@@ -14,7 +14,7 @@ fi
 export CONDA_EXE="$CONDA"
 
 # Reuse the canonical setup path. It removes environments with the wrong
-# Python version, ignores external Conda pins, installs CUDA PyTorch via pip,
+# Python version, ignores external Conda pins, installs PyTorch 2.7.1/cu128 via pip,
 # and reinstalls the remaining benchmark dependencies.
 H3_ONLY=1 INSTALL_FLASH_ATTN=0 bash setup/make_envs.sh
 
@@ -30,9 +30,10 @@ print("Transformers:", transformers.__version__)
 print("CUDA runtime:", torch.version.cuda)
 print("GPU available:", torch.cuda.is_available())
 assert sys.version_info[:2] == (3, 10), "Expected Python 3.10"
-assert torch.__version__.split("+")[0] == "2.1.2"
-assert torchvision.__version__.split("+")[0] == "0.16.2"
-assert torch.version.cuda is not None, "CPU-only PyTorch was installed"
+assert torch.__version__.split("+")[0] == "2.7.1"
+assert torchvision.__version__.split("+")[0] == "0.22.1"
+assert torch.version.cuda == "12.8"
+assert "sm_120" in torch.cuda.get_arch_list(), "CPU-only PyTorch was installed"
 PY
 done
 

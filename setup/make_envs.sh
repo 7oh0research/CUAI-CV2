@@ -25,9 +25,9 @@ trap 'rm -f "$TMP_CONDARC"' EXIT
 
 # LLaVA-1.5 compatibility baseline. Keep these versions aligned with upstream LLaVA.
 PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
-TORCH_VERSION="${TORCH_VERSION:-2.1.2}"
-TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.16.2}"
-CUDA_RUNTIME="${CUDA_RUNTIME:-12.1}"
+TORCH_VERSION="${TORCH_VERSION:-2.7.1}"
+TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.22.1}"
+CUDA_RUNTIME="${CUDA_RUNTIME:-12.8}"
 
 create_env() {
   local name="$1" repo="$2"
@@ -42,23 +42,17 @@ create_env() {
   if ! "$CONDA" env list | awk '{print $1}' | grep -qx "$name"; then
     "$CONDA" create --no-pin --override-channels -c conda-forge -y -n "$name" "python=$PYTHON_VERSION" pip
   fi
-  # Keep Python managed by Conda and install the CUDA build from the official
-  # PyTorch + NVIDIA Conda channels. This avoids pip wheel-index discovery
-  # failures ("No matching distribution found") on restricted/cloud hosts.
+  # Keep Python managed by Conda. RTX 5090 (sm_120 / Blackwell) requires
+  # PyTorch built with CUDA 12.8; PyTorch 2.1.2/cu121 cannot run this GPU.
   "$CONDA" install --no-pin -y -n "$name" "python=$PYTHON_VERSION" pip
   "$CONDA" run --no-capture-output -n "$name" python -m pip install --upgrade 'pip<25' 'setuptools<76' wheel packaging ninja
-
-  # Repair an existing env too: env existence alone does not mean torch exists.
-  if ! "$CONDA" run -n "$name" python -c \
-      'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.1.2"; assert torchvision.__version__.split("+")[0] == "0.16.2"; assert torch.version.cuda is not None' >/dev/null 2>&1; then
-    echo "[INFO] Installing CUDA PyTorch from Conda channels in $name (torch $TORCH_VERSION, torchvision $TORCHVISION_VERSION, CUDA $CUDA_RUNTIME)."
-    "$CONDA" install --no-pin --override-channels -y -n "$name" \
-      -c pytorch -c nvidia -c conda-forge \
-      "pytorch=$TORCH_VERSION" "torchvision=$TORCHVISION_VERSION" "pytorch-cuda=$CUDA_RUNTIME"
-  fi
+  echo "[INFO] Installing RTX 5090-compatible PyTorch $TORCH_VERSION / torchvision $TORCHVISION_VERSION (CUDA $CUDA_RUNTIME) in $name."
+  "$CONDA" run --no-capture-output -n "$name" python -m pip install --no-cache-dir --upgrade \
+    "torch==$TORCH_VERSION" "torchvision==$TORCHVISION_VERSION" \
+    --index-url "https://download.pytorch.org/whl/cu128"
   "$CONDA" run -n "$name" python -c \
-    'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.1.2"; assert torchvision.__version__.split("+")[0] == "0.16.2"; assert torch.version.cuda is not None; print("[OK]", torch.__version__, torchvision.__version__, "CUDA", torch.version.cuda)' \
-    || { echo "[ERROR] CUDA PyTorch validation failed in $name" >&2; exit 1; }
+    'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.7.1"; assert torchvision.__version__.split("+")[0] == "0.22.1"; assert torch.version.cuda == "12.8"; assert "sm_120" in torch.cuda.get_arch_list(); print("[OK]", torch.__version__, torchvision.__version__, "CUDA", torch.version.cuda)' \
+    || { echo "[ERROR] RTX 5090 CUDA PyTorch validation failed in $name" >&2; exit 1; }
   "$CONDA" run --no-capture-output -n "$name" python -m pip install \
     'transformers==4.37.2' 'tokenizers==0.15.1' 'sentencepiece==0.1.99' \
     'accelerate==0.21.0' 'numpy==1.26.4' 'scikit-learn==1.2.2' \
@@ -77,9 +71,14 @@ create_env() {
   fi
   # Install this benchmark package without allowing pip to replace the pinned stack.
   "$CONDA" run --no-capture-output -n "$name" python -m pip install -e . --no-deps
+  # Reassert the CUDA wheel pair and NumPy version after method dependencies.
+  "$CONDA" run --no-capture-output -n "$name" python -m pip install --no-cache-dir --upgrade \
+    "torch==$TORCH_VERSION" "torchvision==$TORCHVISION_VERSION" \
+    --index-url "https://download.pytorch.org/whl/cu128"
+  "$CONDA" run -n "$name" python -m pip install numpy==1.26.4
   "$CONDA" run -n "$name" python -m pip check || echo "[WARN] pip check reported dependency conflicts in $name; see output above."
-  "$CONDA" run -n "$name" python -c 'import torch, torchvision, transformers; print("[OK] Imports:", torch.__version__, torchvision.__version__, transformers.__version__)' \
-    || { echo "[ERROR] Required import validation failed in $name" >&2; exit 1; }
+  "$CONDA" run -n "$name" python -c 'import torch, torchvision, transformers, numpy; assert torch.__version__.split("+")[0] == "2.7.1"; assert torchvision.__version__.split("+")[0] == "0.22.1"; assert torch.version.cuda == "12.8"; assert "sm_120" in torch.cuda.get_arch_list(); assert numpy.__version__ == "1.26.4"; print("[OK] Imports:", torch.__version__, torchvision.__version__, transformers.__version__, "NumPy", numpy.__version__)' \
+    || { echo "[ERROR] Required RTX 5090 imports/validation failed in $name" >&2; exit 1; }
   echo "[OK] Environment ready: $name"
 }
 

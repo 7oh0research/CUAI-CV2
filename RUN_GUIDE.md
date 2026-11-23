@@ -30,7 +30,7 @@ MME_ROOT=/workspace/h1_bench/data/MME_Benchmark_release_version
 2. Miniforge 설치 (`$HOME/miniforge3`, root 권한 불필요)
 3. NVIDIA Driver/GPU 및 MME 경로 사전 검사
 4. 비교 알고리즘 공식 저장소 clone 및 commit 기록
-5. Python 3.10 + PyTorch 2.1.2 + CUDA 12.1 기반의 알고리즘별 독립 Conda 환경 생성
+5. Python 3.10 + PyTorch 2.7.1 + CUDA 12.8 (RTX 5090 / sm_120 compatible) 기반의 알고리즘별 독립 Conda 환경 생성
 6. LLaVA 및 benchmark 의존성 설치
 7. CUDA compiler가 호환되는 경우 FlashAttention 2 설치 시도
 8. CUDA 및 Python 환경 검사
