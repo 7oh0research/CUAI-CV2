@@ -41,13 +41,34 @@ def flops_table(cfg: dict) -> pd.DataFrame:
     return df
 
 
+def preflight() -> None:
+    import transformers
+
+    print(f"torch {torch.__version__} (cuda {torch.version.cuda}), transformers {transformers.__version__}")
+    if not torch.cuda.is_available():
+        raise SystemExit("CUDA not available")
+    cap = torch.cuda.get_device_capability()
+    arch = f"sm_{cap[0]}{cap[1]}"
+    p = torch.cuda.get_device_properties(0)
+    print(f"GPU {p.name}, {p.total_memory / 2**30:.1f} GiB, {arch}")
+    if arch not in torch.cuda.get_arch_list():  # e.g. RTX 5090 (sm_120) needs a CUDA 12.8+ build
+        raise SystemExit(f"this torch build has no kernels for {arch}: {torch.cuda.get_arch_list()}; "
+                         "install a cu128+ build (see docs/remote_gpu.md)")
+    a = torch.randn(4096, 4096, device="cuda", dtype=torch.float16)
+    torch.cuda.synchronize()
+    print("fp16 matmul ok:", (a @ a).float().abs().mean().item() > 0)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--preflight", action="store_true", help="check torch/CUDA/GPU arch support and exit")
     ap.add_argument("--config", default="configs/h1.yaml")
     ap.add_argument("--tiny", action="store_true", help="random tiny LLaVA on CPU (pipeline smoke test)")
     ap.add_argument("--flops-only", action="store_true", help="print the analytic FLOPs table and exit")
     ap.add_argument("--out", default=None, help="override output_dir")
     args = ap.parse_args()
+    if args.preflight:
+        return preflight()
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
 
     if args.flops_only:

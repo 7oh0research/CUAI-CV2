@@ -50,6 +50,6 @@ python scripts/profile_efficiency.py --config configs/h1.yaml              # res
 python scripts/analyze_h1.py --records outputs/h1/records.jsonl --out outputs/h1/report
 ```
 
-See [docs/h1_experiment.md](docs/h1_experiment.md).
+See [docs/h1_experiment.md](docs/h1_experiment.md). Renting a cloud GPU (Vast.ai RTX 5090 over SSH): [docs/remote_gpu.md](docs/remote_gpu.md) (`scripts/setup_remote.sh`, `profile_efficiency.py --preflight`).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
