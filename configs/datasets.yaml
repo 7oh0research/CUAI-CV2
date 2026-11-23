@@ -1,0 +1,3 @@
+# Prepare a normalized JSONL manifest. One JSON object per line:
+# {"question_id":"q1","dataset":"pope","image":"/abs/path/img.jpg","question":"Is there a dog?","ground_truth":"yes"}
+manifest: /workspace/datasets/h3_manifest.jsonl

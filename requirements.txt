@@ -1,0 +1,9 @@
+# Method-specific environments are installed by setup/install.sh.
+# This file is for lightweight manifest and result analysis only.
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.6.1
+matplotlib==3.10.1
+PyYAML==6.0.2
+tqdm==4.67.1
+Pillow==11.1.0

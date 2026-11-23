@@ -1,0 +1,10 @@
+project: CUAI-CV2-H3
+model: LLaVA-1.5-7B
+methods: [vanilla, fastv, sparsevlm, visionzip]
+visual_token_budget: 64
+fastv: {layer: 2, prune_ratio: 0.8888889}
+sparsevlm: {retain_tokens: 64}
+visionzip: {dominant: 54, contextual: 10}
+max_new_tokens: 32
+temperature: 0.0
+batch_size: 1
