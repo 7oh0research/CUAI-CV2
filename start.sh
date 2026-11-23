@@ -10,7 +10,16 @@ case "$PROFILE" in
     NEED=0
     [[ -z "$CONDA" ]] && NEED=1
     if [[ "$NEED" == 0 ]]; then
-      for e in h1_llava h1_fastv h1_sparsevlm h1_visionzip; do "$CONDA" env list | awk '{print $1}' | grep -qx "$e" || NEED=1; done
+      for e in h1_llava h1_fastv h1_sparsevlm h1_visionzip; do
+        "$CONDA" env list | awk '{print $1}' | grep -qx "$e" || { NEED=1; break; }
+        pyver="$("$CONDA" run -n "$e" python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null | tail -n1 || true)"
+        [[ "$pyver" == "3.10" ]] || { echo "[WARN] $e uses Python ${pyver:-unknown}; setup will repair it."; NEED=1; break; }
+        if ! "$CONDA" run -n "$e" python -c 'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.1.2"; assert torchvision.__version__.split("+")[0] == "0.16.2"; assert torch.version.cuda is not None' >/dev/null 2>&1; then
+          echo "[WARN] $e is missing the required CUDA PyTorch stack; setup will repair it."
+          NEED=1
+          break
+        fi
+      done
     fi
     if [[ "$NEED" == 1 ]]; then bash setup_h3.sh; CONDA="$HOME/miniforge3/bin/conda"; fi
     if [[ ! -f .env ]]; then cp .env.example .env; fi

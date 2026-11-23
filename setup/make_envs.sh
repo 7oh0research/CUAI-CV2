@@ -11,6 +11,18 @@ fi
 [[ -n "$CONDA" ]] || { echo "[ERROR] Conda not found. Run bash setup/install_miniforge.sh first." >&2; exit 1; }
 export CONDA_EXE="$CONDA"
 
+# Ignore machine/user-level Conda pins (for example python=3.12) for this
+# project setup only. The benchmark requires Python 3.10 for its pinned stack.
+TMP_CONDARC="$(mktemp)"
+cat > "$TMP_CONDARC" <<'CONDARC_EOF'
+channels:
+  - conda-forge
+channel_priority: strict
+pinned_packages: []
+CONDARC_EOF
+export CONDARC="$TMP_CONDARC"
+trap 'rm -f "$TMP_CONDARC"' EXIT
+
 # LLaVA-1.5 compatibility baseline. Keep these versions aligned with upstream LLaVA.
 PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
 TORCH_VERSION="${TORCH_VERSION:-2.1.2}"
@@ -19,12 +31,34 @@ CUDA_RUNTIME="${CUDA_RUNTIME:-12.1}"
 
 create_env() {
   local name="$1" repo="$2"
-  if ! "$CONDA" env list | awk '{print $1}' | grep -qx "$name"; then
-    "$CONDA" create -y -n "$name" "python=$PYTHON_VERSION" pip
+  # Repair environments left behind by an interrupted setup (e.g. Python 3.12).
+  if "$CONDA" env list | awk '{print $1}' | grep -qx "$name"; then
+    CURRENT_PY="$("$CONDA" run -n "$name" python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null | tail -n1 || true)"
+    if [[ "$CURRENT_PY" != "$PYTHON_VERSION" ]]; then
+      echo "[WARN] $name has Python '${CURRENT_PY:-unknown}' (required $PYTHON_VERSION); recreating environment."
+      "$CONDA" env remove -y -n "$name"
+    fi
   fi
-  "$CONDA" install -y -n "$name" -c pytorch -c nvidia \
-    "pytorch=$TORCH_VERSION" "torchvision=$TORCHVISION_VERSION" "pytorch-cuda=$CUDA_RUNTIME"
+  if ! "$CONDA" env list | awk '{print $1}' | grep -qx "$name"; then
+    "$CONDA" create --no-pin --override-channels -c conda-forge -y -n "$name" "python=$PYTHON_VERSION" pip
+  fi
+  # Keep the Python interpreter in Conda, but install the pinned CUDA-enabled
+  # PyTorch wheels from the official PyTorch index. This avoids Conda solver
+  # conflicts caused by image-level pins such as python=3.12.
+  "$CONDA" install --no-pin -y -n "$name" "python=$PYTHON_VERSION" pip
   "$CONDA" run --no-capture-output -n "$name" python -m pip install --upgrade 'pip<25' 'setuptools<76' wheel packaging ninja
+
+  # Repair an existing env too: env existence alone does not mean torch exists.
+  if ! "$CONDA" run -n "$name" python -c \
+      'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.1.2"; assert torchvision.__version__.split("+")[0] == "0.16.2"; assert torch.version.cuda is not None' >/dev/null 2>&1; then
+    echo "[INFO] Installing/reparing CUDA PyTorch in $name (torch $TORCH_VERSION, torchvision $TORCHVISION_VERSION, CUDA $CUDA_RUNTIME)."
+    "$CONDA" run --no-capture-output -n "$name" python -m pip install --no-cache-dir --force-reinstall \
+      "torch==$TORCH_VERSION" "torchvision==$TORCHVISION_VERSION" \
+      --index-url "https://download.pytorch.org/whl/cu121"
+  fi
+  "$CONDA" run -n "$name" python -c \
+    'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.1.2"; assert torchvision.__version__.split("+")[0] == "0.16.2"; assert torch.version.cuda is not None; print("[OK]", torch.__version__, torchvision.__version__, "CUDA", torch.version.cuda)' \
+    || { echo "[ERROR] CUDA PyTorch validation failed in $name" >&2; exit 1; }
   "$CONDA" run --no-capture-output -n "$name" python -m pip install \
     'transformers==4.37.2' 'tokenizers==0.15.1' 'sentencepiece==0.1.99' \
     'accelerate==0.21.0' 'numpy==1.26.4' 'scikit-learn==1.2.2' \
@@ -43,7 +77,9 @@ create_env() {
   fi
   # Install this benchmark package without allowing pip to replace the pinned stack.
   "$CONDA" run --no-capture-output -n "$name" python -m pip install -e . --no-deps
-  "$CONDA" run -n "$name" python -m pip check || true
+  "$CONDA" run -n "$name" python -m pip check || echo "[WARN] pip check reported dependency conflicts in $name; see output above."
+  "$CONDA" run -n "$name" python -c 'import torch, torchvision, transformers; print("[OK] Imports:", torch.__version__, torchvision.__version__, transformers.__version__)' \
+    || { echo "[ERROR] Required import validation failed in $name" >&2; exit 1; }
   echo "[OK] Environment ready: $name"
 }
 
