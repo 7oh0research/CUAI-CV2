@@ -8,3 +8,4 @@ data/processed/
 outputs/
 *.pt
 *.pth
+*.egg-info/
