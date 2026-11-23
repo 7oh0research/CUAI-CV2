@@ -19,19 +19,11 @@ CUDA_RUNTIME="${CUDA_RUNTIME:-12.1}"
 
 create_env() {
   local name="$1" repo="$2"
-  # Repair environments left behind by an interrupted setup (e.g. Python 3.12).
-  if "$CONDA" env list | awk '{print $1}' | grep -qx "$name"; then
-    CURRENT_PY="$("$CONDA" run -n "$name" python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null | tail -n1 || true)"
-    if [[ "$CURRENT_PY" != "$PYTHON_VERSION" ]]; then
-      echo "[WARN] $name has Python '${CURRENT_PY:-unknown}' (required $PYTHON_VERSION); recreating environment."
-      "$CONDA" env remove -y -n "$name"
-    fi
-  fi
   if ! "$CONDA" env list | awk '{print $1}' | grep -qx "$name"; then
-    "$CONDA" create --no-pin -y -n "$name" "python=$PYTHON_VERSION" pip
+    "$CONDA" create -y -n "$name" "python=$PYTHON_VERSION" pip
   fi
-  "$CONDA" install --no-pin -y -n "$name" -c pytorch -c nvidia \
-    "python=$PYTHON_VERSION" "pytorch=$TORCH_VERSION" "torchvision=$TORCHVISION_VERSION" "pytorch-cuda=$CUDA_RUNTIME"
+  "$CONDA" install -y -n "$name" -c pytorch -c nvidia \
+    "pytorch=$TORCH_VERSION" "torchvision=$TORCHVISION_VERSION" "pytorch-cuda=$CUDA_RUNTIME"
   "$CONDA" run --no-capture-output -n "$name" python -m pip install --upgrade 'pip<25' 'setuptools<76' wheel packaging ninja
   "$CONDA" run --no-capture-output -n "$name" python -m pip install \
     'transformers==4.37.2' 'tokenizers==0.15.1' 'sentencepiece==0.1.99' \
