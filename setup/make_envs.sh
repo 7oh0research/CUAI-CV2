@@ -42,19 +42,19 @@ create_env() {
   if ! "$CONDA" env list | awk '{print $1}' | grep -qx "$name"; then
     "$CONDA" create --no-pin --override-channels -c conda-forge -y -n "$name" "python=$PYTHON_VERSION" pip
   fi
-  # Keep the Python interpreter in Conda, but install the pinned CUDA-enabled
-  # PyTorch wheels from the official PyTorch index. This avoids Conda solver
-  # conflicts caused by image-level pins such as python=3.12.
+  # Keep Python managed by Conda and install the CUDA build from the official
+  # PyTorch + NVIDIA Conda channels. This avoids pip wheel-index discovery
+  # failures ("No matching distribution found") on restricted/cloud hosts.
   "$CONDA" install --no-pin -y -n "$name" "python=$PYTHON_VERSION" pip
   "$CONDA" run --no-capture-output -n "$name" python -m pip install --upgrade 'pip<25' 'setuptools<76' wheel packaging ninja
 
   # Repair an existing env too: env existence alone does not mean torch exists.
   if ! "$CONDA" run -n "$name" python -c \
       'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.1.2"; assert torchvision.__version__.split("+")[0] == "0.16.2"; assert torch.version.cuda is not None' >/dev/null 2>&1; then
-    echo "[INFO] Installing/reparing CUDA PyTorch in $name (torch $TORCH_VERSION, torchvision $TORCHVISION_VERSION, CUDA $CUDA_RUNTIME)."
-    "$CONDA" run --no-capture-output -n "$name" python -m pip install --no-cache-dir --force-reinstall \
-      "torch==$TORCH_VERSION" "torchvision==$TORCHVISION_VERSION" \
-      --index-url "https://download.pytorch.org/whl/cu121"
+    echo "[INFO] Installing CUDA PyTorch from Conda channels in $name (torch $TORCH_VERSION, torchvision $TORCHVISION_VERSION, CUDA $CUDA_RUNTIME)."
+    "$CONDA" install --no-pin --override-channels -y -n "$name" \
+      -c pytorch -c nvidia -c conda-forge \
+      "pytorch=$TORCH_VERSION" "torchvision=$TORCHVISION_VERSION" "pytorch-cuda=$CUDA_RUNTIME"
   fi
   "$CONDA" run -n "$name" python -c \
     'import torch, torchvision; assert torch.__version__.split("+")[0] == "2.1.2"; assert torchvision.__version__.split("+")[0] == "0.16.2"; assert torch.version.cuda is not None; print("[OK]", torch.__version__, torchvision.__version__, "CUDA", torch.version.cuda)' \

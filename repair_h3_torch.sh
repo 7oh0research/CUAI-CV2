@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild/repair all H3 environments using the pinned Python 3.10 stack.
+# Rebuild/repair all H3 environments using the pinned Python 3.10 stack and official PyTorch Conda packages.
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
