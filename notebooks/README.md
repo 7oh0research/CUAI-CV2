@@ -1,3 +1,0 @@
-# notebooks
-
-Exploratory Jupyter notebooks.
