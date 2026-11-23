@@ -1,0 +1,21 @@
+project: CUAI-CV2-H3
+model: llava-v1.5-7b
+seed: 42
+methods: [vanilla, fastv, sparsevlm, visionzip]
+conditions: [blind, original, compressed]
+visual_token_budget: 64
+# Keep method-specific settings explicit; verify against the paper/repository before final runs.
+fastv:
+  pruning_layer: 2
+  keep_ratio: 0.111111
+sparsevlm:
+  target_visual_tokens: 64
+visionzip:
+  dominant_tokens: 54
+  contextual_tokens: 10
+decoding:
+  temperature: 0
+  top_p: 1
+  num_beams: 1
+  max_new_tokens: 64
+batch_size: 1

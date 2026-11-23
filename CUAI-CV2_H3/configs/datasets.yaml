@@ -1,0 +1,8 @@
+# Set absolute roots in .env. Dataset-specific official evaluators should be used.
+MME:
+  enabled: true
+  root_env: MME_ROOT
+POPE:
+  enabled: true
+  root_env: POPE_ROOT
+  questions_env: POPE_FILE
