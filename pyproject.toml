@@ -17,10 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# GPU inference stack (needed only for `scripts/run_experiment.py`)
+# GPU inference stack (needed for `scripts/run_experiment.py` and `scripts/profile_efficiency.py`; efficiency engine tested on transformers 5.24)
 infer = [
   "torch",
-  "transformers>=4.45",
+  "transformers>=4.50",
   "accelerate",
   "datasets",
   "pillow",

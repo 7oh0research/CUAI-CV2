@@ -1,0 +1,29 @@
+# H1 (theoretical vs measured efficiency) -- full run. Needs a GPU (24GB+ recommended: fp16, unquantized).
+# Quantization kernels distort latency, so never quantize for H1.
+model:
+  name: llava-hf/llava-1.5-7b-hf
+  dtype: float16
+
+# none (576 tokens) is always run. Built-ins: random, avgpool, cls_attn (encoder-side),
+# fastv, pdrop, sparsevlm_lite (in-LLM; minimal re-implementations, see src/vlmeval/efficiency/methods.py).
+methods: [random, avgpool, cls_attn, fastv, pdrop, sparsevlm_lite]
+
+# "Retained visual tokens" reference. Encoder-side: tokens fed to the LLM. In-LLM: stage keep = multiplier * budget
+# (fastv x1.0 after layer 1; pdrop x2/x1/x0.5 after layers 7/15/23; sparsevlm_lite x1.5/x1/x0.5 after layers 2/6/15).
+# 144 / 64 are square so avgpool hits the budget exactly (12x12, 8x8); 192 -> 13x15 = 195.
+budgets: [192, 144, 64]
+
+batch_sizes: [1, 4, 16]       # larger batches expose compute-bound vs memory-bound regimes
+attn_impls: [sdpa, eager]     # sdpa = fused / FlashAttention-capable kernel, eager = materialised attention map
+
+max_new_tokens: 64            # every run decodes 64 tokens; shorter output lengths L are derived in analysis
+warmup: 3
+repeats: 10
+seed: 0
+question: "Describe the image in detail."
+
+# Optional: define extra methods / override schedules.
+# custom_methods:
+#   fastv_k8: {kind: inllm, scorer: last, stages: [{layer: 7, keep: 1.0}]}
+
+output_dir: outputs/h1

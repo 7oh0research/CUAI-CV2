@@ -85,3 +85,8 @@ python scripts/analyze.py --records outputs/pilot/records.jsonl --out outputs/pi
 - `none` 방법의 baseline 정확도가 공개 수치와 대략 일치하는지 (POPE ~85, TextVQA ~58). 크게 다르면 프롬프트 템플릿 점검.
 - 지연시간 측정은 batch size 1, 동일 GPU, 다른 프로세스 없음, 24GB 이상 권장.
 - GQA 어댑터는 미구현 (TODO).
+
+## H1 상세 실험 설계
+
+H1(이론 효율 vs 실측 효율)의 구체 설계, 선행 연구(Wen et al., AnchorPrune, VisionDrop), 실행 방법은 [h1_experiment.md](h1_experiment.md) 참고. 코드: `src/vlmeval/efficiency/`.
+
