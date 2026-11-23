@@ -40,9 +40,14 @@ run(){
     local o="$dir/${m}_${R}_${at}_${bs}_${r}.jsonl"
     [[ -s "$o" ]] && continue
     echo "[RUN] $m R=$R attn=$at bs=$bs rep=$r"
+    local t0 t1 rc=0
+    t0=$(date +%s)
     "$CONDA" run --no-capture-output -n "$E" python -m h1bench.run_one \
       --method "$m" --R "$R" --attn "$at" --bs "$bs" --rep "$r" --out "$o" "$@" \
-      >> "logs/${m}_${R}_${at}_${bs}.log" 2>&1 || true
+      >> "logs/${m}_${R}_${at}_${bs}.log" 2>&1 || rc=$?
+    t1=$(date +%s)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$m" "$R" "$at" "$bs" "$r" "$((t1-t0))" "$rc" "$o" >> logs/runtime_runs.tsv
     grep -q '"status": "oom"' "$o" 2>/dev/null && break || true
     [[ -s "$o" ]] || { echo "[ERROR] No result file produced. See logs/${m}_${R}_${at}_${bs}.log" >&2; return 1; }
   done

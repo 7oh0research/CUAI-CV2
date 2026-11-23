@@ -19,4 +19,6 @@ for s in load_mme(os.environ["MME_ROOT"]):
     f = files.setdefault(s["subtask"], open(f"{out_dir}/{s['subtask']}.txt", "w"))
     f.write(f"{os.path.basename(s['image'])}\t{s['question']}\t{s['answer']}\t{ans}\n")
 for f in files.values(): f.close()
+with open(os.path.join(out_dir, ".complete"), "w") as marker:
+    marker.write("MME prediction generation completed\n")
 print(out_dir)

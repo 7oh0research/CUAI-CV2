@@ -6,7 +6,7 @@ mkdir -p third_party env
 
 python3 - <<'PY'
 import json, os, subprocess
-repos = {
+all_repos = {
     "baseline": "https://github.com/haotian-liu/LLaVA",
     "fastv": "https://github.com/pkunlp-icler/FastV",
     "pdrop": "https://github.com/Cooperx521/PyramidDrop",
@@ -15,6 +15,7 @@ repos = {
     "divprune": "https://github.com/vbdi/divprune",
     "cdpruner": "https://github.com/Theia-4869/CDPruner",
 }
+repos = {k: v for k, v in all_repos.items() if not os.environ.get("H3_ONLY") or k in {"baseline", "fastv", "sparsevlm", "visionzip"}}
 records = {}
 for name, url in repos.items():
     path = f"third_party/{name}"

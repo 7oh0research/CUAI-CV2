@@ -59,31 +59,61 @@ bash step2_smoke_test.sh
 
 `MISMATCH`가 나온 방법은 해당 알고리즘의 공식 구현과 `h1bench/adapters.py`, `configs/methods.yaml` 설정을 대조해야 합니다. Smoke Test는 실제 알고리즘의 토큰 감소 동작을 확인하기 위한 단계이며, 단순히 패키지가 import된다고 측정이 유효한 것은 아닙니다.
 
-## 4. 전체 측정
+## 4. 통합 실행 (권장)
+
+처음부터 설치까지 한 번에 진행하려면 아래 명령을 실행합니다.
 
 ```bash
-bash step3_main_R32_bs1.sh
-bash step4_batch_sweep.sh
-bash step5_R_sweep.sh
-bash step6_aggregate.sh
+bash start.sh
 ```
 
-또는 처음부터 순서대로 실행하려면:
+`start.sh`는 Conda/LLaVA 환경이 없으면 `setup.sh`를 먼저 실행하고, `.env`에 MME 경로가 비어 있으면 데이터셋 경로를 한 번 입력받은 뒤 전체 파이프라인을 시작합니다. 이미 설치와 `.env` 설정이 끝났다면 아래 명령으로 실험만 실행할 수 있습니다.
 
 ```bash
 bash run_all.sh
 ```
 
-기존 결과 파일이 있으면 해당 조합은 건너뛰는 resume 동작을 합니다. 결과를 처음부터 다시 측정하려면 `results/raw/`의 해당 결과 파일을 직접 백업/삭제하세요.
+`run_all.sh`는 `run_pipeline.sh`를 호출하며 다음 순서로 진행합니다.
 
-| 단계 | 주요 결과 |
-|---|---|
-| 1 | `env/env.json`, `env/h1_*.json` |
-| 2 | `results/smoke/*.jsonl`, `results/smoke/smoke_report.txt` |
-| 3~5 | `results/raw/*.jsonl`, `logs/*.log` |
-| 6 | `results/summary.csv`, `results/ratios.csv`, `results/figs/` |
+1. GPU/CUDA/PyTorch/Conda 및 데이터셋 사전 검사
+2. 각 알고리즘의 Smoke Test 및 최종 visual-token 수 검증
+3. 현재 Vast.ai GPU에서 측정한 Smoke Test 실행 시간을 기반으로 전체 소요 시간 추정
+4. R=32, batch size=1 기준 실험 및 MME 예측 답변 생성
+5. batch-size sweep (4, 8, 16)
+6. R sweep (64, 128, 192)
+7. CSV 및 그래프 취합, 최종 JSON 보고서 생성
+8. 공식 MME scorer가 제공되면 점수 계산 시도
 
-## 5. FlashAttention 관련
+전체 실험 시작 전 예상 소요 시간과 GPU 대여 비용이 발생할 수 있다는 안내가 나오며, `y`를 입력해야 진행합니다. 확인 없이 실행하려면 `bash start.sh --yes` 또는 `bash run_all.sh --yes`를 사용합니다.
+
+선택 옵션:
+
+```bash
+bash run_pipeline.sh --dry-run       # 실행 단계만 확인
+bash run_pipeline.sh --skip-smoke    # Smoke Test 생략 (권장하지 않음)
+bash run_pipeline.sh --yes           # 전체 실험 확인 프롬프트 생략
+```
+
+Smoke Test에서 토큰 수 불일치 또는 알고리즘 오류가 발견되면 전체 실험을 중단합니다. 원인을 수정한 뒤 다시 실행하세요.
+
+## 5. 결과 및 재실행
+
+- `results/raw/`: 조합별 원시 측정 결과
+- `results/mme/<method>/`: 방법별 MME 예측 답변 및 `.complete` 완료 마커
+- `results/summary.csv`: 실험 요약
+- `results/ratios.csv`: baseline 대비 비율
+- `results/layer_tokens.csv`: 층별 visual-token 수
+- `results/attn_impl_actual.csv`: 실제 Attention 구현
+- `results/figs/`: 그래프
+- `results/final_report.json`: 최종 결과 인덱스 및 상태
+- `logs/pipeline.log`: 통합 실행 로그
+- `logs/runtime_runs.tsv`: 개별 실험 프로세스 실행 시간
+
+기존 결과 파일이 있으면 해당 조합은 건너뛰는 Resume 동작을 합니다. 중단 후 같은 명령을 다시 실행할 수 있습니다. 완료 마커가 없는 MME 결과는 다시 생성합니다.
+
+공식 MME 점수 계산은 별도 배포된 `calculation.py`가 필요합니다. 기본 경로 `$MME_ROOT/../eval_tool/calculation.py`에서 자동 탐색하며, 다른 경로라면 `.env`에 `MME_EVAL_TOOL=/absolute/path/to/calculation.py`를 지정합니다. 평가 도구가 없으면 예측 파일까지만 생성하고 공식 점수 계산은 건너뜁니다.
+
+## 6. FlashAttention 관련
 
 FlashAttention은 필수가 아닙니다. `nvcc`가 없거나 CUDA/PyTorch 조합이 맞지 않으면 설치를 건너뛰며 `eager`, `sdpa` 측정은 계속할 수 있습니다. FlashAttention을 별도로 시도하려면 호환 CUDA Toolkit을 준비한 뒤 아래처럼 실행합니다.
 
@@ -93,7 +123,7 @@ bash setup/install_flash_attn.sh h1_llava
 
 설치 여부는 `env/h1_llava.json` 등을 확인하세요. 각 환경별 설치 상태가 다를 수 있습니다.
 
-## 6. 선택 사항: AnchorPrune
+## 7. 선택 사항: AnchorPrune
 
 AnchorPrune 저장소는 현재 자동 clone 대상이 아닙니다. 별도 checkout 경로를 `.env`의 `ANCHORPRUNE_PATH`에 지정한 뒤 아래를 다시 실행하세요.
 
@@ -103,10 +133,20 @@ bash setup/make_envs.sh
 bash step1_env_check.sh
 ```
 
-## 7. 유의 사항
+## 8. 유의 사항
 
 - `configs/methods.yaml`의 `n_samples`, `warmup`, `new_tokens`, batch size 및 R sweep은 실험 설정입니다. GPU 메모리가 부족하면 batch size를 낮추거나 설정을 조정하세요.
 - 일반적인 데스크톱 RTX 4090은 24GB VRAM입니다. README의 과거 실험 장비 표기와 실제 장비 사양이 다를 수 있으므로 `env/env.json`의 실측 VRAM을 기준으로 판단하세요.
 - 모델 가중치(`liuhaotian/llava-v1.5-7b`)는 첫 실행 시 Hugging Face에서 다운로드되며, 저장 공간과 네트워크가 필요합니다.
-- MME 점수 생성은 `step3_main_R32_bs1.sh` 실행 후 안내되는 공식 MME evaluation tool로 별도 수행합니다.
+- MME 예측 답변은 `step3_main_R32_bs1.sh`에서 생성합니다. 공식 점수 계산은 별도 scorer가 탐지되면 통합 Pipeline이 실행하고, 없으면 예측 파일 생성까지만 진행합니다.
 - FlashAttention 미설치 환경의 `flash_attention_2` 조건은 `unsupported_env`로 기록됩니다.
+
+## H3-only fast workflow
+
+For the revised research scope, use:
+
+```bash
+bash start.sh --profile h3
+```
+
+This runs only H3 (Vanilla blind inference, then visual inference for Vanilla/FastV/SparseVLM/VisionZip, followed by Score A/Score B aggregation). H1 is not rerun. Configure `MME_ROOT`, `POPE_ROOT`, and `POPE_FILE` in `.env`. Full details: `H3_GUIDE.md`.

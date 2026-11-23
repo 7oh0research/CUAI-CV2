@@ -47,25 +47,41 @@ create_env() {
   echo "[OK] Environment ready: $name"
 }
 
-create_env h1_llava third_party/baseline
-create_env h1_fastv third_party/baseline
-if [[ -d third_party/fastv/src/transformers ]]; then
-  "$CONDA" run --no-capture-output -n h1_fastv python -m pip install -e third_party/fastv/src/transformers --no-deps
+if [[ "${H3_ONLY:-0}" == "1" ]]; then
+  create_env h1_llava third_party/baseline
+  create_env h1_fastv third_party/baseline
+  if [[ -d third_party/fastv/src/transformers ]]; then
+    "$CONDA" run --no-capture-output -n h1_fastv python -m pip install -e third_party/fastv/src/transformers --no-deps
+  else
+    echo "[WARN] FastV transformers fork not found at third_party/fastv/src/transformers."
+  fi
+  create_env h1_sparsevlm third_party/sparsevlm
+  create_env h1_visionzip third_party/baseline
+  if [[ -d third_party/visionzip ]]; then
+    "$CONDA" run --no-capture-output -n h1_visionzip python -m pip install -e third_party/visionzip --no-deps || echo "[WARN] VisionZip editable install failed."
+  fi
 else
-  echo "[WARN] FastV transformers fork not found at third_party/fastv/src/transformers."
+  create_env h1_llava third_party/baseline
+  create_env h1_fastv third_party/baseline
+  if [[ -d third_party/fastv/src/transformers ]]; then
+    "$CONDA" run --no-capture-output -n h1_fastv python -m pip install -e third_party/fastv/src/transformers --no-deps
+  else
+    echo "[WARN] FastV transformers fork not found at third_party/fastv/src/transformers."
+  fi
+  create_env h1_pdrop third_party/pdrop
+  create_env h1_sparsevlm third_party/sparsevlm
+  create_env h1_visionzip third_party/baseline
+  if [[ -d third_party/visionzip ]]; then
+    "$CONDA" run --no-capture-output -n h1_visionzip python -m pip install -e third_party/visionzip --no-deps || echo "[WARN] VisionZip editable install failed."
+  fi
+  create_env h1_divprune third_party/divprune
+  create_env h1_cdpruner third_party/cdpruner
+  if [[ -d third_party/anchorprune ]]; then create_env h1_anchorprune third_party/anchorprune; fi
 fi
-create_env h1_pdrop third_party/pdrop
-create_env h1_sparsevlm third_party/sparsevlm
-create_env h1_visionzip third_party/baseline
-if [[ -d third_party/visionzip ]]; then
-  "$CONDA" run --no-capture-output -n h1_visionzip python -m pip install -e third_party/visionzip --no-deps || echo "[WARN] VisionZip editable install failed."
-fi
-create_env h1_divprune third_party/divprune
-create_env h1_cdpruner third_party/cdpruner
-if [[ -d third_party/anchorprune ]]; then create_env h1_anchorprune third_party/anchorprune; fi
 
 if [[ "${INSTALL_FLASH_ATTN:-auto}" != "0" ]]; then
   for e in h1_llava h1_fastv h1_pdrop h1_sparsevlm h1_visionzip h1_divprune h1_cdpruner; do
+    if [[ "${H3_ONLY:-0}" == "1" && ! "$e" =~ ^(h1_llava|h1_fastv|h1_sparsevlm|h1_visionzip)$ ]]; then continue; fi
     bash setup/install_flash_attn.sh "$e" || {
       rc=$?
       echo "[WARN] FlashAttention unavailable for $e (exit=$rc). Other attention modes remain available."
