@@ -1,12 +1,5 @@
-.env
 .venv/
+.hf_cache/
+results/
+logs_*.txt
 __pycache__/
-*.py[cod]
-.pytest_cache/
-third_party/*
-!third_party/README.md
-results/raw/*
-results/processed/*
-results/reports/*
-logs/*
-.cache/

@@ -1,9 +1,15 @@
-# Method-specific environments are installed by setup/install.sh.
-# This file is for lightweight manifest and result analysis only.
-numpy==1.26.4
-pandas==2.2.3
-scikit-learn==1.6.1
-matplotlib==3.10.1
-PyYAML==6.0.2
-tqdm==4.67.1
-Pillow==11.1.0
+# torch/torchvision은 setup.sh에서 CUDA 12.8 인덱스로 먼저 설치한다 (여기서 다시 설치하지 않음)
+transformers>=4.46,<5.0
+accelerate>=0.33
+datasets>=2.20
+huggingface_hub
+pillow
+numpy
+pandas
+scipy
+pyarrow
+pyyaml
+tqdm
+matplotlib
+sentencepiece
+protobuf

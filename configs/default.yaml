@@ -1,0 +1,42 @@
+model_id: llava-hf/llava-1.5-7b-hf
+dtype: float16
+attn_implementation: sdpa      # 5090에서 flash-attn 빌드를 피하기 위해 SDPA 사용
+batch_size: 16
+seed: 0
+conditions: [image, blank, noimage]
+blank_gray_value: 128
+
+# H3 판정 규칙 (결과를 보기 전에 고정)
+decision:
+  alpha: 0.01
+  lpr_threshold: 0.2
+  bootstrap: 1000
+
+benchmarks:
+  pope:
+    hf_id: lmms-lab/POPE
+    split: test
+    type: yesno
+    max_new_tokens: 8
+  mme:
+    hf_id: lmms-lab/MME
+    split: test
+    type: yesno
+    max_new_tokens: 8
+  textvqa:
+    hf_id: lmms-lab/textvqa
+    split: validation
+    type: open
+    max_new_tokens: 16
+  scienceqa_img:
+    hf_id: lmms-lab/ScienceQA
+    hf_config: ScienceQA-IMG
+    split: test
+    type: mc
+    max_new_tokens: 8
+  mmbench_en:
+    hf_id: lmms-lab/MMBench
+    hf_config: en
+    split: dev
+    type: mc
+    max_new_tokens: 8

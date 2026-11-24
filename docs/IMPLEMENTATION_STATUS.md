@@ -1,4 +1,0 @@
-# Implementation status
-The package includes launch paths for Vanilla, FastV, SparseVLM, VisionZip, plus blind-set freezing and shared analysis. It uses official upstream integrations: FastV's patched Transformers fork, SparseVLM's v1.5 LLaVA fork and token-budget environment variable, and VisionZip's public LLaVA API. Because upstream environments are version-incompatible, each method has a separate conda environment.
-
-This delivery environment has no outbound network and no RTX 5090. Shell/Python static checks can be run here, but cloning, dependency resolution and end-to-end CUDA execution have not been performed. Do not treat the package as hardware-validated until Vast.ai installation and smoke tests pass. MME official scoring still requires the official MME evaluator; the included analysis reports generic accuracy and visual-dependent accuracy only.
