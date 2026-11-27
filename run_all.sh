@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# 사용법: bash run_all.sh quick | full
+# usage: bash run_all.sh quick|full
 set -euo pipefail
-cd "$(dirname "$0")"
+MODE=${1:-quick}
 source .venv/bin/activate
-export HF_HOME="${HF_HOME:-$PWD/.hf_cache}"
-MODE="${1:-quick}"
-if [ "$MODE" = "quick" ]; then N="--max-samples 200"; RUN="quick"; else N=""; RUN="full"; fi
-python -m h3.run --config configs/default.yaml --run-name "$RUN" $N 2>&1 | tee -a "logs_${RUN}.txt"
-python -m h3.analyze --config configs/default.yaml --run-name "$RUN" 2>&1 | tee -a "logs_${RUN}.txt"
-echo "보고서: results/$RUN/report.md"
+if [ "$MODE" = full ] && [ ! -f results/quick/SANITY_OK ]; then
+  echo "[STOP] run 'bash run_all.sh quick' first (sanity check must pass)"; exit 1; fi
+if [ "$MODE" = quick ]; then
+  python scripts/sanity_check.py && mkdir -p results/quick && touch results/quick/SANITY_OK
+fi
+python scripts/run.py "$MODE" 2>&1 | tee -a "results_${MODE}.log"
+python scripts/analyze.py "$MODE"
+echo "report: results/$MODE/report.md"

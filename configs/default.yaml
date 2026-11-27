@@ -1,42 +1,52 @@
-model_id: llava-hf/llava-1.5-7b-hf
+# ---------------------------------------------------------------
+# PRE-REGISTERED. Do not edit after looking at full results.
+# ---------------------------------------------------------------
+model: llava-hf/llava-1.5-7b-hf
 dtype: float16
-attn_implementation: sdpa      # 5090에서 flash-attn 빌드를 피하기 위해 SDPA 사용
-batch_size: 16
 seed: 0
-conditions: [image, blank, noimage]
-blank_gray_value: 128
 
-# H3 판정 규칙 (결과를 보기 전에 고정)
-decision:
-  alpha: 0.01
-  lpr_threshold: 0.2
-  bootstrap: 1000
+# Retained visual tokens (of 576). Perfect squares so that pool2d
+# (the "downsampling" baseline of VTC-Bench) is exact: 12x12, 8x8, 6x6.
+budgets: [144, 64, 36]
 
-benchmarks:
-  pope:
-    hf_id: lmms-lab/POPE
-    split: test
-    type: yesno
-    max_new_tokens: 8
-  mme:
-    hf_id: lmms-lab/MME
-    split: test
-    type: yesno
-    max_new_tokens: 8
-  textvqa:
-    hf_id: lmms-lab/textvqa
-    split: validation
-    type: open
-    max_new_tokens: 16
-  scienceqa_img:
-    hf_id: lmms-lab/ScienceQA
-    hf_config: ScienceQA-IMG
-    split: test
-    type: mc
-    max_new_tokens: 8
-  mmbench_en:
-    hf_id: lmms-lab/MMBench
-    hf_config: en
-    split: dev
-    type: mc
-    max_new_tokens: 8
+# Methods. Pre-LLM methods act on CLIP features before the projector.
+# In-LLM methods prune image tokens inside the LLaMA decoder.
+# "budget" = number of image tokens kept right after the (first) pruning point
+# (the convention used in the VisionZip / SparseVLM tables). The average number
+# of image tokens per layer is also logged so readers can re-normalize.
+methods:
+  random:    {stage: pre}
+  pool2d:    {stage: pre}                       # = downsampling baseline
+  visionzip: {stage: pre, dominant_frac: 0.85}  # 54+10 at 64 in the paper
+  divprune:  {stage: pre}
+  fastv:     {stage: llm, prune_after_layer: 1} # = FastV K=2
+  pdrop:     {stage: llm, prune_after_layers: [1, 9, 17], keep_frac_of_budget: [1.0, 0.5, 0.25]}
+  dart:      {stage: llm, prune_after_layer: 1, n_pivots: 8}
+
+# Control conditions (vanilla model) used for the H3 blind filter.
+controls: [image, blank, noimage]
+
+benchmarks:   # max_samples: seeded random subset; null = all
+  pope:        {max_samples: 3000}
+  mme:         {max_samples: null}
+  textvqa:     {max_samples: 2000}
+  scienceqa:   {max_samples: null}
+  mmbench:     {max_samples: 2000}
+  gqa:         {max_samples: 2000}
+  mmstar:      {max_samples: null}
+  ai2d:        {max_samples: 2000}
+  seedbench:   {max_samples: 2000}
+  chartqa:     {max_samples: 2000}
+  ocrbench:    {max_samples: null}
+  realworldqa: {max_samples: null}
+  vizwiz:      {max_samples: 2000}
+
+quick_samples: 100
+
+analysis:
+  bootstrap: 2000
+  ci: 0.95
+  # A benchmark enters the H3 ranking test only if blind items are not negligible.
+  min_blind_frac: 0.10
+  # Subsets compared against "all"
+  subsets: [all, nonblind, difficult, difficult_nonblind]

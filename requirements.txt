@@ -1,15 +1,12 @@
-# torch/torchvision은 setup.sh에서 CUDA 12.8 인덱스로 먼저 설치한다 (여기서 다시 설치하지 않음)
-transformers>=4.46,<5.0
-accelerate>=0.33
-datasets>=2.20
-huggingface_hub
+# torch is installed separately by setup.sh (cu128 wheel for RTX 5090)
+transformers==4.51.3
+accelerate>=1.2
+datasets>=3.0
 pillow
-numpy
-pandas
-scipy
-pyarrow
 pyyaml
-tqdm
+pandas
+numpy
+scipy
 matplotlib
-sentencepiece
-protobuf
+tqdm
+tabulate

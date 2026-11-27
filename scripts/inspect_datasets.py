@@ -1,14 +1,19 @@
-"""각 데이터셋의 필드 구조를 출력한다. 로더가 기대하는 필드와 다르면 h3/data.py를 수정해야 한다."""
-import yaml
+"""Print fields + one example per benchmark. Run before anything else."""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datasets import load_dataset
-cfg = yaml.safe_load(open("configs/default.yaml"))
-for name, b in cfg["benchmarks"].items():
+from vtcb.data import BENCHES, iter_items
+only = sys.argv[1:]
+for name, (p, c, s) in BENCHES.items():
+    if only and name not in only:
+        continue
+    print("=" * 70, name, p, c, s)
     try:
-        ds = load_dataset(b["hf_id"], b.get("hf_config"), split=b["split"], streaming=True)
-        ex = next(iter(ds))
-        print(f"== {name}: {b['hf_id']} [{b['split']}]")
-        for k, v in ex.items():
-            s = type(v).__name__ if k == "image" else repr(v)[:80]
-            print(f"   {k}: {s}")
+        ds = load_dataset(p, c, split=s, streaming=True)
+        r = next(iter(ds))
+        for k, v in r.items():
+            print(f"  {k:20s} {type(v).__name__:12s} {str(v)[:80]!r}")
+        it = next(iter_items(name, 3))
+        print("  -> adapted:", {k: (v if k != "image" else (v.size if v else None)) for k, v in it.items()})
     except Exception as e:
-        print(f"== {name}: 실패 -> {e}")
+        print("  !! FAILED:", type(e).__name__, e)
